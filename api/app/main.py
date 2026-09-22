@@ -121,7 +121,7 @@ def get_attendance(
         LEFT JOIN teams t ON t.id = a.team_id
         {where}
         ORDER BY a.date DESC, e.name
-        LIMIT 1000
+        LIMIT 10000
         """,
         params,
     )
@@ -158,7 +158,7 @@ def get_leave(
         JOIN employees e ON e.id = l.employee_id
         {where}
         ORDER BY l.date DESC
-        LIMIT 1000
+        LIMIT 10000
         """,
         params,
     )

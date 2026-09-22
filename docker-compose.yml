@@ -58,17 +58,15 @@ services:
       - ./auth-service/app:/app/app
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:8001
     restart: unless-stopped
     ports:
       - "3001:80"
     depends_on:
       - api
-    volumes:
-      # Keeps the CURRENT dashboard working exactly as-is (it fetches
-      # ./data.json directly) off the same file the loader reads — one
-      # source of truth, no code change to the existing dashboard yet.
-      - ./data/data.json:/usr/share/nginx/html/data.json:ro
 
   # One-off, not started by `docker compose up`. Run explicitly:
   #   docker compose --profile tools run --rm loader
