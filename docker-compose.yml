@@ -1,0 +1,90 @@
+# Host ports are remapped (5434 / 8001 / 8002 / 3001) to avoid clashing
+# with your other local projects. Internal container-to-container traffic
+# is unaffected — services still talk to each other on 5432/8000 inside
+# the docker network; only what's exposed to your machine changed.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: attendance
+      POSTGRES_PASSWORD: attendance
+      POSTGRES_DB: attendance
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U attendance"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://attendance:attendance@db:5432/attendance
+      AUTH_SECRET: ${AUTH_SECRET}
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-false}
+    ports:
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./api/app:/app/app
+
+  auth-service:
+    build: ./auth-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://attendance:attendance@db:5432/attendance
+      AUTH_SECRET: ${AUTH_SECRET}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ENTRA_TENANT_ID: ${ENTRA_TENANT_ID:-}
+      ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID:-}
+      ENTRA_CLIENT_SECRET: ${ENTRA_CLIENT_SECRET:-}
+    ports:
+      - "8002:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./auth-service/app:/app/app
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "3001:80"
+    depends_on:
+      - api
+    volumes:
+      # Keeps the CURRENT dashboard working exactly as-is (it fetches
+      # ./data.json directly) off the same file the loader reads — one
+      # source of truth, no code change to the existing dashboard yet.
+      - ./data/data.json:/usr/share/nginx/html/data.json:ro
+
+  # One-off, not started by `docker compose up`. Run explicitly:
+  #   docker compose --profile tools run --rm loader
+  # No host pip install needed — psycopg2 already lives in this image.
+  loader:
+    build: ./api
+    environment:
+      DATABASE_URL: postgresql://attendance:attendance@db:5432/attendance
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./data:/data
+      - ./scripts:/scripts
+    entrypoint: ["python", "/scripts/load_data.py", "/data/data.json"]
+    profiles: ["tools"]
+
+volumes:
+  pgdata:
