@@ -1,36 +1,42 @@
 """
-Loads the existing flat data.json export into the full normalized schema.
+Loads data.json by POSTing to the running API's bulk-ingestion endpoints
+(/attendance/bulk, /leave/bulk) — NOT by connecting to Postgres directly.
 
-Source row shape (confirmed from the actual file):
-[employee_id, name, date, in_time, out_time, work_hours, overtime,
- late_in, early_out, present_flag, team, leave_type, has_leave_data, exemption_reason]
+Uses only the Python standard library (urllib, json) — no pip install
+required at all. Run this straight on the host with any Python 3:
 
-Run (host, requires psycopg2-binary):
     python scripts/load_data.py /path/to/data.json
 
-Or via Docker, with no host pip install needed:
-    docker compose run --rm loader
-(loader service is defined in docker-compose.yml, mounts ./data and ./scripts)
+Assumes the api service is already up (docker compose up -d) and
+reachable at http://localhost:8001 (or set API_URL / AUTH_TOKEN below).
 """
 import json
-import sys
 import os
+import sys
+import urllib.error
+import urllib.request
 
-import psycopg2
-from psycopg2.extras import execute_values
-
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "postgresql://attendance:attendance@localhost:5434/attendance"
-)
+API_URL = os.environ.get("API_URL", "http://localhost:8001")
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN")  # only needed once AUTH_REQUIRED=true
 
 
-def parse_time(value):
-    """Source times are 'HH:MM' strings or None."""
-    return value if value else None
+def post_json(path, payload):
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{API_URL}{path}", data=body, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    if AUTH_TOKEN:
+        req.add_header("Authorization", f"Bearer {AUTH_TOKEN}")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{path} -> HTTP {e.code}: {detail}") from None
 
 
 def clean_team_name(name):
-    # Source has at least one trailing-space team name ("App Compat ").
     return name.strip() if name else "Unassigned"
 
 
@@ -38,109 +44,52 @@ def load(json_path):
     with open(json_path, "r", encoding="utf-8") as f:
         rows = json.load(f)
 
-    conn = psycopg2.connect(DATABASE_URL)
-    cur = conn.cursor()
+    attendance_records = []
+    leave_records = []
+    skipped = 0
 
-    # 1. Teams
-    team_names = sorted({clean_team_name(r[10]) for r in rows})
-    execute_values(
-        cur,
-        "INSERT INTO teams (name) VALUES %s ON CONFLICT (name) DO NOTHING",
-        [(t,) for t in team_names],
-    )
-    cur.execute("SELECT id, name FROM teams")
-    team_id_by_name = {name: tid for tid, name in cur.fetchall()}
-
-    # 2. Employees — current_team_id is a best-effort default from this
-    #    person's MOST RECENT row in the export. This is only a convenience
-    #    snapshot; it is NOT what attendance_records.team_id uses (that's
-    #    taken per-row, per the snapshot-not-join principle discussed).
-    #    current_role / current_shift stay NULL — this source has no shift
-    #    or role data; that arrives once Zoho's employee sync exists.
-    latest_row_by_employee = {}
-    for r in rows:
-        emp_id, name, date = r[0], r[1], r[2]
-        if emp_id not in latest_row_by_employee or date > latest_row_by_employee[emp_id][2]:
-            latest_row_by_employee[emp_id] = r
-
-    employee_rows = [
-        (emp_id, r[1], team_id_by_name[clean_team_name(r[10])])
-        for emp_id, r in latest_row_by_employee.items()
-    ]
-    execute_values(
-        cur,
-        """
-        INSERT INTO employees (id, name, current_team_id) VALUES %s
-        ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, current_team_id = EXCLUDED.current_team_id
-        """,
-        employee_rows,
-    )
-
-    # 3. Attendance records
-    attendance_rows = []
-    leave_rows = []
-    failed = 0
     for r in rows:
         try:
             employee_id, name, date, in_time, out_time, work_hours, overtime, \
                 late_in, early_out, present, team, leave_type, has_leave_data, \
                 exemption_reason = r
 
-            team_id = team_id_by_name[clean_team_name(team)]
+            attendance_records.append({
+                "employee_id": employee_id,
+                "employee_name": name,
+                "date": date,
+                "check_in": in_time,
+                "check_out": out_time,
+                "work_hours": work_hours or 0,
+                "overtime_hours": overtime or 0,
+                "late_in": bool(late_in),
+                "early_out": bool(early_out),
+                "present": bool(present),
+                "team_name": clean_team_name(team),
+            })
 
-            attendance_rows.append((
-                employee_id, date, parse_time(in_time), parse_time(out_time),
-                work_hours or 0, overtime or 0, bool(late_in), bool(early_out),
-                bool(present), team_id, "migrated",
-            ))
-
-            # Leave is split into its own table now — only insert a row
-            # when the source actually flagged one.
             if leave_type:
-                leave_rows.append((employee_id, date, leave_type, "approved", "zoho"))
-
+                leave_records.append({
+                    "employee_id": employee_id,
+                    "date": date,
+                    "leave_type": leave_type,
+                    "status": "approved",
+                })
         except Exception as e:
-            failed += 1
+            skipped += 1
             print(f"Skipping malformed row {r}: {e}", file=sys.stderr)
 
-    execute_values(
-        cur,
-        """
-        INSERT INTO attendance_records
-            (employee_id, date, check_in, check_out, work_hours, overtime_hours,
-             late_in, early_out, present, team_id, source)
-        VALUES %s
-        ON CONFLICT (employee_id, date) DO UPDATE SET
-            check_in = EXCLUDED.check_in, check_out = EXCLUDED.check_out,
-            work_hours = EXCLUDED.work_hours, overtime_hours = EXCLUDED.overtime_hours,
-            late_in = EXCLUDED.late_in, early_out = EXCLUDED.early_out,
-            present = EXCLUDED.present, team_id = EXCLUDED.team_id
-        """,
-        attendance_rows,
-    )
+    print(f"Posting {len(attendance_records)} attendance records to {API_URL}/attendance/bulk ...")
+    result = post_json("/attendance/bulk", {"source": "migrated", "records": attendance_records})
+    print(f"  -> {result}")
 
-    if leave_rows:
-        execute_values(
-            cur,
-            """
-            INSERT INTO leave_records (employee_id, date, leave_type, status, source)
-            VALUES %s ON CONFLICT (employee_id, date, leave_type) DO NOTHING
-            """,
-            leave_rows,
-        )
+    if leave_records:
+        print(f"Posting {len(leave_records)} leave records to {API_URL}/leave/bulk ...")
+        result = post_json("/leave/bulk", {"source": "zoho", "records": leave_records})
+        print(f"  -> {result}")
 
-    cur.execute(
-        "INSERT INTO sync_log (source, records_processed, records_failed, status, notes) VALUES (%s, %s, %s, %s, %s)",
-        ("json_migration", len(attendance_rows), failed, "complete", f"loaded from {json_path}"),
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    print(
-        f"Loaded {len(attendance_rows)} attendance records, {len(leave_rows)} leave records "
-        f"({failed} skipped) across {len(employee_rows)} employees and {len(team_names)} teams."
-    )
+    if skipped:
+        print(f"{skipped} malformed rows skipped — see stderr above.")
 
 
 if __name__ == "__main__":

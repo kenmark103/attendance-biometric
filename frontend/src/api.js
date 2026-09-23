@@ -1,107 +1,93 @@
-// API adapter — turns normalized /attendance + /leave into the flat RAW shape
-// the dashboard expects: [id,name,date,in, out, hours, overtime, late, early, present, team, leave, hasLeaveData, exemption]
+// API layer — fetches attendance, leave, and holidays and merges them into
+// rich per-day records. Deliberately does NOT flatten back into the old
+// fixed-position tuple shape: source, shift_anomaly, and holiday data have
+// nowhere to live in that shape, which is exactly what was being dropped.
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 function apiUrl(path) {
-  // in dev VITE_API_URL is empty -> use /api proxy; in prod set to http://localhost:8001
   if (API_BASE === '/api') return `/api${path}`;
   return `${API_BASE.replace(/\/$/, '')}${path}`;
 }
 
-export async function fetchTeams() {
-  const r = await fetch(apiUrl('/teams'));
-  if (!r.ok) throw new Error(`teams ${r.status}`);
-  return r.json();
-}
-
-export async function fetchAttendance({ date_from, date_to, team_id } = {}) {
+async function getJSON(path, params = {}) {
   const p = new URLSearchParams();
-  if (date_from) p.set('date_from', date_from);
-  if (date_to) p.set('date_to', date_to);
-  if (team_id) p.set('team_id', team_id);
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') p.set(k, v);
+  });
   const qs = p.toString() ? `?${p}` : '';
-  const r = await fetch(apiUrl(`/attendance${qs}`));
-  if (!r.ok) throw new Error(`attendance ${r.status}`);
+  const r = await fetch(apiUrl(`${path}${qs}`));
+  if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r.json();
 }
 
-export async function fetchLeave({ date_from, date_to, employee_id } = {}) {
-  const p = new URLSearchParams();
-  if (date_from) p.set('date_from', date_from);
-  if (date_to) p.set('date_to', date_to);
-  if (employee_id) p.set('employee_id', employee_id);
-  const qs = p.toString() ? `?${p}` : '';
-  const r = await fetch(apiUrl(`/leave${qs}`));
-  if (!r.ok) throw new Error(`leave ${r.status}`);
-  return r.json();
+export const fetchTeams = () => getJSON('/teams');
+export const fetchAttendance = (params) => getJSON('/attendance', params);
+export const fetchLeave = (params) => getJSON('/leave', params);
+export const fetchHolidays = (params) => getJSON('/holidays', params);
+
+function toDateStr(d) {
+  return d ? String(d).slice(0, 10) : d;
+}
+function toTimeStr(t) {
+  return t ? String(t).slice(0, 5) : null;
 }
 
-// Build RAW rows from attendance + leave, mirroring scripts/load_data.py join.
-// We fetch attendance and leave separately then merge by (employee_id, date).
-export async function fetchRaw({ date_from, date_to } = {}) {
-  const [attendance, leave] = await Promise.all([
-    fetchAttendance({ date_from, date_to }),
+/**
+ * One record per (employee, date) that actually exists in attendance_records.
+ *
+ * Known limitation, worth knowing about rather than silently working around:
+ * this only covers dates that HAVE a row. If a sync ever fails to write a
+ * day at all (not present=false, but no row whatsoever — the "partial sync"
+ * failure mode from the design discussion), that gap is invisible here.
+ * Detecting it properly needs each employee's active date range, which the
+ * schema doesn't cleanly expose yet (employees.status is active/offboarded,
+ * not a date range) — flagging this as a real open item, not solving it
+ * with a guess the way the old hasLeaveData hack did.
+ */
+export async function fetchDayRecords({ date_from, date_to, team_id } = {}) {
+  const [attendance, leave, holidays] = await Promise.all([
+    fetchAttendance({ date_from, date_to, team_id }),
     fetchLeave({ date_from, date_to }),
+    fetchHolidays({ date_from, date_to }),
   ]);
 
-  // index leave by employee_id|date -> leave_type (first one). If multiple leave types same day, join with ", "
-  const leaveByKey = new Map();
-  const exemptByKey = new Map();
+  const holidayByDate = new Map(holidays.map((h) => [toDateStr(h.date), h.name]));
+
+  const leavesByKey = new Map(); // "employeeId|date" -> [{type, status}]
   for (const l of leave) {
-    const k = `${l.employee_id}|${l.date.slice(0, 10)}`;
-    // l.date may be "2026-08-03" or ISO; normalize
-    const d = l.date.slice(0, 10);
-    const k2 = `${l.employee_id}|${d}`;
-    const cur = leaveByKey.get(k2);
-    if (!cur) leaveByKey.set(k2, l.leave_type);
-    else leaveByKey.set(k2, `${cur}, ${l.leave_type}`);
-    // exemption = Maternity/whatever that shows as exempt in original dashboard
-    // Original: exemptionReason field was used for Maternity Leave etc when present==0
-    // We treat leave_type containing Maternity/WFH/Exempt as exemption as well
-    if (/maternity|wfh|exempt|onsite/i.test(l.leave_type)) {
-      const curE = exemptByKey.get(k2);
-      if (!curE) exemptByKey.set(k2, l.leave_type);
-    }
+    const key = `${l.employee_id}|${toDateStr(l.date)}`;
+    const list = leavesByKey.get(key) || [];
+    list.push({ type: l.leave_type, status: l.status });
+    leavesByKey.set(key, list);
   }
 
-  // hasLeaveData: in original data, hasLeaveData was 1 when Zoho leave data existed for that employee.
-  // Now we approximate: 1 if we have any leave row for that employee at all, else 1 (since system has leave data).
-  // For employees with no leave rows ever, we still assume hasLeaveData=true (API is authoritative).
-  // This keeps "unverified" only for dates we intentionally lack leave coverage — which shouldn't happen now.
-  const employeesWithLeave = new Set(leave.map((l) => l.employee_id));
+  const records = attendance.map((a) => {
+    const date = toDateStr(a.date);
+    const key = `${a.employee_id}|${date}`;
+    const holidayName = holidayByDate.get(date) || null;
 
-  const raw = attendance.map((a) => {
-    const d = a.date.slice(0, 10);
-    const k = `${a.employee_id}|${d}`;
-    const leaveType = leaveByKey.get(k) || '';
-    const exemption = exemptByKey.get(k) || '';
-    // If present==false and exemption present, dashboard shows exempt status
-    // If present==false and leaveType present, shows approved
-    const hasLeaveData = 1;
-    return [
-      a.employee_id,
-      a.employee_name,
-      d,
-      a.check_in ? a.check_in.slice(0, 5) : null,
-      a.check_out ? a.check_out.slice(0, 5) : null,
-      Number(a.work_hours ?? 0),
-      Number(a.overtime_hours ?? 0),
-      a.late_in ? 1 : 0,
-      a.early_out ? 1 : 0,
-      a.present ? 1 : 0,
-      a.team_name || 'Unassigned',
-      leaveType,
-      hasLeaveData,
-      exemption,
-    ];
+    return {
+      employeeId: a.employee_id,
+      name: a.employee_name,
+      team: a.team_name || 'Unassigned',
+      date,
+      checkIn: toTimeStr(a.check_in),
+      checkOut: toTimeStr(a.check_out),
+      hours: Number(a.work_hours ?? 0),
+      overtime: Number(a.overtime_hours ?? 0),
+      late: !!a.late_in,
+      early: !!a.early_out,
+      present: !!a.present,
+      source: a.source || 'migrated',       // 'biometric' | 'zoho_manual' | 'migrated'
+      assignedShift: a.assigned_shift || null,
+      matchedShift: a.matched_shift || null,
+      shiftAnomaly: !!a.shift_anomaly,
+      leaves: leavesByKey.get(key) || [],
+      isHoliday: !!holidayName,
+      holidayName,
+    };
   });
 
-  // The attendance table only has rows for days where an employee existed (4356 rows).
-  // The original dashboard computed missing days as unverified — we keep that behavior
-  // by leaving gaps as-is; the dashboard's computeDerived will treat absent dates accordingly
-  // because weekdayRecordsAll only contains existing rows, and DayChips falls back to unverified.
-
-  // Sort by date then name for stable rendering
-  raw.sort((x, y) => (x[2] === y[2] ? x[1].localeCompare(y[1]) : x[2].localeCompare(y[2])));
-  return raw;
+  records.sort((x, y) => (x.date === y.date ? x.name.localeCompare(y.name) : x.date.localeCompare(y.date)));
+  return records;
 }

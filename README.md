@@ -1,110 +1,74 @@
-# Attendance System — Phase 1 (local dev)
-
-Phase 1 covers: full DB schema, the read API, and an auth service with a
-real Google login (for you to learn the OIDC flow) and a config-ready,
-currently-inactive Entra ID route. What's still stubbed and why is listed
-at the bottom.
-
-## Services
-
-| Service | Host port | Purpose |
-|---|---|---|
-| `db` | 5434 | Postgres |
-| `api` | 8001 | Attendance/leave/holidays API |
-| `auth-service` | 8002 | OIDC login (Google now, Entra ID once configured) |
-| `frontend` | 3001 | The existing static dashboard |
-
-Ports were remapped off the usual 5432/8000/3000 defaults since those
-collide with your other local projects. This only changes what's exposed
-to your machine — services still talk to each other inside the docker
-network on the standard ports (see `docker-compose.yml`).
+# Attendance System — local dev
 
 ## Run it
 
 ```bash
 cp .env.example .env
 # generate AUTH_SECRET: python -c "import secrets; print(secrets.token_hex(32))"
-# fill it into .env, leave GOOGLE_*/ENTRA_* blank for now if you're not testing auth yet
-
-mkdir -p data
-cp /path/to/your/data.json data/data.json   # do this BEFORE `up` — frontend bind-mounts this exact file
 
 docker compose up -d --build
 ```
 
-Load that same file into Postgres — **no host `pip install` needed**,
-this runs inside a container:
+Load your data — **this is now a plain HTTP client using only the Python
+standard library, no pip install at all**, so it can't hit the PyPI/SSL
+build failure a `loader` Docker service used to:
 
 ```bash
-docker compose --profile tools run --rm loader
+python scripts/load_data.py data/data.json
 ```
 
-Check it:
+It POSTs to the already-running `api` container's `/attendance/bulk` and
+`/leave/bulk` endpoints, which handle team/employee upserts and chunked
+inserts internally. Any Python 3 on your machine works — nothing to build.
 
+Check it:
 ```bash
 curl http://localhost:8001/health
-curl http://localhost:8001/teams
 curl "http://localhost:8001/attendance?date_from=2026-08-01&date_to=2026-08-03"
-curl http://localhost:8001/leave
 ```
 
 API docs: `http://localhost:8001/docs`
 
-## Testing the Google login flow
+## Why there's no `loader` service anymore
 
-1. Create OAuth credentials at https://console.cloud.google.com/apis/credentials
-   (Web application), redirect URI `http://localhost:8002/auth/callback/google`.
-2. Put `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in `.env`, restart:
-   `docker compose up -d --build auth-service`
-3. Add yourself to the whitelist first — this app is invite-only, so
-   authenticating successfully isn't enough on its own:
-   ```sql
-   INSERT INTO app_users (email, name, role) VALUES ('you@gmail.com', 'Kenny', 'admin');
-   ```
-4. Visit `http://localhost:8002/auth/login/google` in a browser.
+There used to be one, built from the same Dockerfile as `api`. Two
+problems with that: Compose tagged it as a **separate** image
+(`attendance-system-loader`, not reusing `attendance-system-api`), so it
+rebuilt from scratch — and on this network, that rebuild's `pip install`
+step fails with a TLS handshake error against `files.pythonhosted.org`
+(a proxy/firewall issue on the office network, not a bug in the Dockerfile).
 
-## Switching to Entra ID later
+Routing ingestion through `/attendance/bulk` instead removes the problem
+structurally: the script talking HTTP+JSON needs no dependencies beyond
+what ships with Python, so there's no build step left to fail. This also
+means the same two endpoints are ready for real biometric/Zoho ingestion
+later — same trust-tier discipline, `source` is a property of the whole
+batch call, never a per-row field the caller sets.
 
-Fill in `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET` in
-`.env`, restart `auth-service`. That's the whole change — same OAuth
-client code, different discovery URL. `/auth/login/entra` goes from a 501
-("not configured") to working the moment those three values are set.
+## Project name pinned
 
-Authorization stays separate from this: whoever logs in still needs a row
-in `app_users` with the right role, regardless of which provider they
-came through.
-
-## Fetch order, once Zoho/biometric integration exists
-
-Zoho (employees + teams) first, then leave/holidays, then biometric —
-in that order, every sync. Employees/teams have to exist before
-attendance rows can reference them (foreign keys); trust priority
-between sources (biometric wins on presence, Zoho wins on leave context)
-is a separate decision made during reconciliation, not during fetch order.
+`name: attendance-system` is set explicitly at the top of
+`docker-compose.yml`. Without it, Compose derives the image-tag prefix
+from whatever folder the repo happens to be cloned into — which is what
+caused the `attendance-system-*` vs `attendance-biometric-*` mismatch
+earlier. This repo can now be cloned into any folder name safely.
 
 ## What's still stubbed, and why
 
-- **`employee_history`** — table exists, not populated. The source JSON
-  has no role/shift data to seed it with; it activates once the Zoho
-  employee sync exists and can detect real changes over time.
-- **`shift_templates`** — seeded with rough windows (day/night/hybrid)
-  from what's been discussed, not confirmed numbers. `attendance_records
-  .assigned_shift` / `matched_shift` stay NULL until Zoho supplies shift
-  assignment — there's nothing to match against yet.
-- **`holidays`** — table exists, empty. Populates once the Zoho holiday
-  fetch is built. Weekends aren't stored here at all — compute those from
-  the date, don't wait on a data source for something derivable.
-- **`audit_log`** — table exists, nothing writes to it yet. Wire it in
-  once there's an actual manual-override endpoint to audit.
-- **Biometric ingestion** — no code for this yet; waiting on the actual
-  endpoint format from the senior dev, and on working out network access
-  (the device is on a lab-network segment your corp-network machine
-  couldn't reach).
-- **CORS + `AUTH_REQUIRED=false` by default** — wide open for local dev.
-  Do not deploy this configuration anywhere reachable outside your machine.
+- **`employee_history`, `shift_templates` matching, `holidays`** — tables
+  exist, nothing populates them yet. They activate once Zoho's
+  employee/shift/holiday sync exists — nothing to match or populate
+  against until then.
+- **`audit_log`** — table exists, nothing writes to it. Wire it in once
+  there's a real manual-override path to audit.
+- **Real biometric ingestion** — no code yet; same `/attendance/bulk`
+  endpoint the loader uses is the intended target, with `source='biometric'`
+  once the COSEC device is reachable and its payload format is confirmed.
+- **CORS wide open, `AUTH_REQUIRED=false` by default** — fine for
+  localhost, not for anywhere reachable outside your machine.
 
 ## Re-running the loader
 
-Upserts on `(employee_id, date)` for attendance, and on
+Upserts on `(employee_id, date)` for attendance and
 `(employee_id, date, leave_type)` for leave — safe to re-run against an
-updated `data.json` without creating duplicates.
+updated `data.json`.

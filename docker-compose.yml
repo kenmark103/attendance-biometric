@@ -2,6 +2,7 @@
 # with your other local projects. Internal container-to-container traffic
 # is unaffected — services still talk to each other on 5432/8000 inside
 # the docker network; only what's exposed to your machine changed.
+name: attendance-system
 
 services:
   db:
@@ -36,6 +37,8 @@ services:
         condition: service_healthy
     volumes:
       - ./api/app:/app/app
+      - ./scripts:/scripts
+      - ./data:/data
 
   auth-service:
     build: ./auth-service
