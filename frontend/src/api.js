@@ -9,14 +9,30 @@ function apiUrl(path) {
   return `${API_BASE.replace(/\/$/, '')}${path}`;
 }
 
+function authHeaders() {
+  const t = localStorage.getItem('token');
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
 async function getJSON(path, params = {}) {
   const p = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== null && v !== '') p.set(k, v);
   });
   const qs = p.toString() ? `?${p}` : '';
-  const r = await fetch(apiUrl(`${path}${qs}`));
+  const r = await fetch(apiUrl(`${path}${qs}`), { headers: { ...authHeaders() } });
   if (!r.ok) throw new Error(`${path} ${r.status}`);
+  return r.json();
+}
+
+async function postJSON(path, body) {
+  const r = await fetch(apiUrl(path), { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`${path} ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+async function delJSON(path) {
+  const r = await fetch(apiUrl(path), { method: 'DELETE', headers: { ...authHeaders() } });
+  if (!r.ok) throw new Error(`${path} ${r.status}: ${await r.text()}`);
   return r.json();
 }
 
@@ -24,6 +40,9 @@ export const fetchTeams = () => getJSON('/teams');
 export const fetchAttendance = (params) => getJSON('/attendance', params);
 export const fetchLeave = (params) => getJSON('/leave', params);
 export const fetchHolidays = (params) => getJSON('/holidays', params);
+export const fetchWfh = (params) => getJSON('/wfh', params);
+export const createWfh = (payload) => postJSON('/wfh', payload);
+export const deleteWfh = (id) => delJSON(`/wfh/${id}`);
 
 function toDateStr(d) {
   return d ? String(d).slice(0, 10) : d;
@@ -45,13 +64,15 @@ function toTimeStr(t) {
  * with a guess the way the old hasLeaveData hack did.
  */
 export async function fetchDayRecords({ date_from, date_to, team_id } = {}) {
-  const [attendance, leave, holidays] = await Promise.all([
+  const [attendance, leave, holidays, wfh] = await Promise.all([
     fetchAttendance({ date_from, date_to, team_id }),
     fetchLeave({ date_from, date_to }),
     fetchHolidays({ date_from, date_to }),
+    fetchWfh({ date_from, date_to }).catch(() => []),
   ]);
 
   const holidayByDate = new Map(holidays.map((h) => [toDateStr(h.date), h.name]));
+  const wfhByKey = new Set(wfh.map((w) => `${w.employee_id}|${toDateStr(w.date)}`));
 
   const leavesByKey = new Map(); // "employeeId|date" -> [{type, status}]
   for (const l of leave) {
@@ -66,6 +87,7 @@ export async function fetchDayRecords({ date_from, date_to, team_id } = {}) {
     const key = `${a.employee_id}|${date}`;
     const holidayName = holidayByDate.get(date) || null;
 
+    const isWfh = wfhByKey.has(key);
     return {
       employeeId: a.employee_id,
       name: a.employee_name,
@@ -77,8 +99,9 @@ export async function fetchDayRecords({ date_from, date_to, team_id } = {}) {
       overtime: Number(a.overtime_hours ?? 0),
       late: !!a.late_in,
       early: !!a.early_out,
-      present: !!a.present,
-      source: a.source || 'migrated',       // 'biometric' | 'zoho_manual' | 'migrated'
+      present: !!a.present || isWfh,
+      wfh: isWfh,
+      source: isWfh ? 'wfh' : (a.source || 'migrated'),
       assignedShift: a.assigned_shift || null,
       matchedShift: a.matched_shift || null,
       shiftAnomaly: !!a.shift_anomaly,

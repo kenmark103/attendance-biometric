@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Technobrain 2x2 icon: orange / slate / slate / white -->
+  <rect x="0" y="0" width="15" height="15" rx="1" fill="#F5831F"/>
+  <rect x="17" y="0" width="15" height="15" rx="1" fill="#514D6B"/>
+  <rect x="0" y="17" width="15" height="15" rx="1" fill="#514D6B"/>
+  <rect x="17" y="17" width="15" height="15" rx="1" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1"/>
+</svg>

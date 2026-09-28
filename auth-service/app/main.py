@@ -18,6 +18,7 @@ import jwt
 from authlib.integrations.starlette_client import OAuth
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 import psycopg2
 import psycopg2.extras
@@ -29,6 +30,12 @@ DATABASE_URL = os.environ.get(
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3001")
 
 app = FastAPI(title="Attendance Auth Service")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.add_middleware(SessionMiddleware, secret_key=AUTH_SECRET)
 
 oauth = OAuth()

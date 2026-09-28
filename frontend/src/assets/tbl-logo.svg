@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 90" width="210" height="45" role="img" aria-label="Technobrain logo">
+  <!-- 3 squares - Technobrain mark -->
+  <rect x="0" y="0" width="36" height="36" rx="1" fill="#F5831F"/>
+  <rect x="40" y="0" width="36" height="36" rx="1" fill="#514D6B"/>
+  <rect x="0" y="40" width="36" height="36" rx="1" fill="#514D6B"/>
+  <!-- TECHNOBRAIN - single text with two colors via tspans avoids overlap/squeeze; wider viewBox prevents N clipping -->
+  <text x="88" y="62" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="38" font-weight="700" letter-spacing="0.6" >
+    <tspan fill="#514D6B">TECHNO</tspan><tspan fill="#F5831F">BRAIN</tspan>
+  </text>
+  <!-- tagline -->
+  <text x="88" y="84" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="11" font-style="italic" letter-spacing="2.4" fill="#514D6B">Empowering Lives</text>
+</svg>

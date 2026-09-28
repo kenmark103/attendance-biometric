@@ -134,3 +134,17 @@ CREATE TABLE audit_log (
     after_value          JSONB,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- WFH approvals: team-lead manual override for approved work-from-home
+-- Not reported via Zoho/biometric. Counts as present for attendance rate.
+CREATE TABLE wfh_approvals (
+    id              SERIAL PRIMARY KEY,
+    employee_id     TEXT NOT NULL REFERENCES employees(id),
+    date            DATE NOT NULL,
+    approved_by     INTEGER REFERENCES app_users(id),
+    reason          TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (employee_id, date)
+);
+CREATE INDEX idx_wfh_employee_date ON wfh_approvals (employee_id, date);
+CREATE INDEX idx_wfh_date ON wfh_approvals (date);

@@ -1,5 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { colors } from './theme.js';
+import logoUrl from './assets/tbl-logo.svg';
+import AuthHeader from './components/AuthHeader.jsx';
 
 const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -40,11 +43,7 @@ function dayStatus(rec) {
   return 'unauthorized';
 }
 
-const colors = {
-  ink: '#1C2321', paper: '#F1F3EF', panel: '#FFFFFF', line: '#DBE0D9',
-  muted: '#6E786F', good: '#3A6B52', alert: '#A63D2F', warn: '#B98B2E',
-  neutral: '#8C8F7E', select: '#2F5D8A', holiday: '#6B5B95', anomaly: '#C97A2B',
-};
+
 
 const STATUS_COLOR = {
   present: colors.good, holiday: colors.holiday, onLeave: colors.warn,
@@ -52,14 +51,14 @@ const STATUS_COLOR = {
 };
 const STATUS_LABEL = {
   present: 'Present', holiday: 'Public holiday', onLeave: 'On leave',
-  unauthorized: 'Absent — no leave on record',
+  unauthorized: 'Absent',
 };
 
 // Trust tier: how strong is the evidence behind "present"? Biometric is a
 // physical scan; zoho_manual is self-attested; migrated is historical
 // import predating this distinction entirely.
-const SOURCE_COLOR = { biometric: colors.good, zoho_manual: colors.warn, migrated: colors.neutral };
-const SOURCE_LABEL = { biometric: 'Biometric (verified)', zoho_manual: 'Self-reported check-in', migrated: 'Migrated historical data' };
+const SOURCE_COLOR = { biometric: colors.good, zoho_manual: colors.warn, migrated: colors.neutral, wfh: colors.select };
+const SOURCE_LABEL = { biometric: 'Biometric (verified)', zoho_manual: 'Self-reported check-in', migrated: 'Migrated historical data', wfh: 'WFH approved' };
 
 function leaveLabel(rec) {
   if (!rec.leaves.length) return '';
@@ -143,7 +142,8 @@ export default function AttendanceDashboard({ records }) {
   const { weekdayRecordsAll, WEEKS, MONTHS, ALL_TEAMS } = useMemo(() => computeDerived(records), [records]);
 
   const [tab, setTab] = useState('Overview');
-  const [team, setTeam] = useState('All teams');
+  const [selectedTeams, setSelectedTeams] = useState([]); // empty = all teams
+  const [shiftFilter, setShiftFilter] = useState('all'); // all|day|night|hybrid
   const [monthFilter, setMonthFilter] = useState('All months');
   const [weekIdx, setWeekIdx] = useState(-1);
   const [query, setQuery] = useState('');
@@ -151,10 +151,14 @@ export default function AttendanceDashboard({ records }) {
   const [sortDir, setSortDir] = useState('desc');
   const [selectedEmpId, setSelectedEmpId] = useState(null);
 
+  const SHIFTS = ['all', 'day', 'night', 'hybrid'];
+
   const teamFiltered = useMemo(() => {
-    if (team === 'All teams') return weekdayRecordsAll;
-    return weekdayRecordsAll.filter((r) => r.team === team);
-  }, [team, weekdayRecordsAll]);
+    let rows = weekdayRecordsAll;
+    if (selectedTeams.length > 0) rows = rows.filter((r) => selectedTeams.includes(r.team));
+    if (shiftFilter !== 'all') rows = rows.filter((r) => (r.assignedShift || r.matchedShift || '').toLowerCase() === shiftFilter);
+    return rows;
+  }, [selectedTeams, shiftFilter, weekdayRecordsAll]);
 
   const visibleWeeks = useMemo(() => {
     if (monthFilter === 'All months') return WEEKS;
@@ -162,7 +166,11 @@ export default function AttendanceDashboard({ records }) {
   }, [monthFilter, WEEKS]);
 
   function handleMonthChange(val) { setMonthFilter(val); setWeekIdx(-1); }
-  function handleTeamClick(t) { setTeam(t === team ? 'All teams' : t); }
+  function toggleTeam(t) {
+    setSelectedTeams((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]);
+  }
+  function handleTeamClick(t) { toggleTeam(t); }
+  function clearTeams() { setSelectedTeams([]); }
 
   const isAggregate = weekIdx === -1 || !visibleWeeks[weekIdx];
   const scopeDates = useMemo(() => {
@@ -273,6 +281,10 @@ export default function AttendanceDashboard({ records }) {
     () => scopeRecords.filter((r) => r.leaves.length > 0).sort((a, b) => b.date.localeCompare(a.date)),
     [scopeRecords]
   );
+  const wfhRecords = useMemo(
+    () => scopeRecords.filter((r) => r.wfh).sort((a, b) => b.date.localeCompare(a.date)),
+    [scopeRecords]
+  );
 
   const filtered = useMemo(() => {
     let rows = employeeStats.filter((e) => e.name.toLowerCase().includes(query.toLowerCase()) || e.id.includes(query));
@@ -309,10 +321,15 @@ export default function AttendanceDashboard({ records }) {
     }}>
       <div style={{ maxWidth: 1120, margin: '0 auto' }}>
 
-        <header style={{ marginBottom: 20, borderBottom: `1px solid ${colors.line}`, paddingBottom: 20, textAlign: 'center' }}>
-          <h1 style={{ fontFamily: "'Fraunces', Georgia, serif", fontWeight: 700, fontSize: 30, margin: 0, lineHeight: 1.2 }}>
-            Attendance Dashboard
-          </h1>
+        <header style={{ marginBottom: 24, borderBottom: `2px solid ${colors.primary}`, paddingBottom: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+            <img src={logoUrl} alt="Technobrain" style={{ height: 46, width: 'auto', display: 'block', flexShrink: 0 }} />
+            <div style={{ width: 1, height: 32, background: colors.line, flexShrink: 0 }} />
+            <h1 style={{ fontFamily: "'Fraunces', Georgia, serif", fontWeight: 700, fontSize: 24, margin: 0, lineHeight: 1.2, color: colors.slate, whiteSpace: 'nowrap' }}>
+              Attendance Dashboard
+            </h1>
+          </div>
+          <AuthHeader />
         </header>
 
         {/* Tabs */}
@@ -345,10 +362,26 @@ export default function AttendanceDashboard({ records }) {
               })}
               <button onClick={() => setWeekIdx(-1)} style={{ fontFamily: 'inherit', fontSize: 12.5, padding: '7px 14px', cursor: 'pointer', fontWeight: 600, border: `1px solid ${isAggregate ? colors.good : colors.line}`, background: isAggregate ? 'rgba(58,107,82,0.1)' : colors.panel, color: isAggregate ? colors.good : colors.ink, borderRadius: 20 }}>{monthFilter === 'All months' ? `All ${WEEKS.length} weeks` : `All of ${monthFilter}`}</button>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <select value={monthFilter} onChange={(e) => handleMonthChange(e.target.value)} style={selectStyle}><option>All months</option>{MONTHS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}</select>
-              <select value={team} onChange={(e) => setTeam(e.target.value)} style={selectStyle}><option>All teams</option>{ALL_TEAMS.map((t) => <option key={t} value={t}>{t}</option>)}</select>
+              <select value={shiftFilter} onChange={(e) => setShiftFilter(e.target.value)} style={selectStyle} title="Filter by shift (view only until Zoho provides assignment)">
+                <option value="all">All shifts</option><option value="day">Day</option><option value="night">Night</option><option value="hybrid">Hybrid</option>
+              </select>
             </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: colors.panel, border: `1px solid ${colors.line}`, borderRadius: 4, padding: '8px 10px' }}>
+            <span style={{ fontSize: 12, color: colors.muted, fontWeight: 600, marginRight: 4 }}>Teams:</span>
+            {ALL_TEAMS.map((t) => {
+              const active = selectedTeams.includes(t);
+              return (
+                <button key={t} onClick={() => toggleTeam(t)} style={{ fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', cursor: 'pointer', border: `1px solid ${active ? colors.select : colors.line}`, background: active ? colors.select : colors.panel, color: active ? '#fff' : colors.ink, borderRadius: 20, fontWeight: active ? 600 : 400 }}>
+                  {t}{active ? ' ×' : ''}
+                </button>
+              );
+            })}
+            {selectedTeams.length > 0 && <button onClick={clearTeams} style={{ fontFamily: 'inherit', fontSize: 12, padding: '5px 10px', cursor: 'pointer', border: `1px solid ${colors.line}`, background: colors.paper, color: colors.muted, borderRadius: 20 }}>Clear ({selectedTeams.length})</button>}
+            {selectedTeams.length === 0 && <span style={{ fontSize: 12, color: colors.muted }}>All teams included. Click to exclude/include. Recomputes all tabs.</span>}
+            {selectedTeams.length > 0 && <span style={{ fontSize: 12, color: colors.select }}>{selectedTeams.length} of {ALL_TEAMS.length} selected</span>}
           </div>
         </section>
 
@@ -369,10 +402,10 @@ export default function AttendanceDashboard({ records }) {
                 </div>
               ))}
             </section>
-            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 32 }}>Figures above reflect: <strong style={{ color: colors.ink }}>{scopeLabel}</strong>{team !== 'All teams' && ` · ${team}`}. Public holidays are excluded from the rate calculations.</div>
+            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 32 }}>Figures above reflect: <strong style={{ color: colors.ink }}>{scopeLabel}</strong>{selectedTeams.length > 0 && ` · ${selectedTeams.join(', ')}`}{shiftFilter !== 'all' && ` · ${shiftFilter} shift`}. Public holidays are excluded from the rate calculations.</div>
 
             <section style={{ marginBottom: 36 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Attendance rate, week over week {team !== 'All teams' && <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {team}</span>}</h2>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Attendance rate, week over week {selectedTeams.length > 0 && <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {selectedTeams.join(', ')}</span>}{shiftFilter !== 'all' && <span style={{ color: colors.muted, fontWeight: 400 }}> &middot; {shiftFilter}</span>}</h2>
               <div style={{ background: colors.panel, border: `1px solid ${colors.line}`, borderRadius: 4, padding: '16px 20px 4px' }}>
                 <ResponsiveContainer width="100%" height={200}>
                   <LineChart data={trendData} margin={{ top: 4, right: 16, left: -12, bottom: 4 }}>
@@ -420,9 +453,9 @@ export default function AttendanceDashboard({ records }) {
                 <thead><tr><th style={th}>Team</th><th style={thR}>Headcount</th><th style={thR}>Attendance rate</th><th style={thR}>Unauthorized rate</th></tr></thead>
                 <tbody>
                   {teamStats.map((t, i) => {
-                    const isSelected = t.team === team;
+                    const isSelected = selectedTeams.includes(t.team);
                     return (
-                      <tr key={t.team} onClick={() => handleTeamClick(t.team)} style={{ borderTop: `1px solid ${colors.line}`, cursor: 'pointer', borderLeft: isSelected ? `3px solid ${colors.select}` : '3px solid transparent', background: isSelected ? `${colors.select}22` : (i % 2 ? 'rgba(0,0,0,0.015)' : 'transparent') }}>
+                      <tr key={t.team} onClick={() => handleTeamClick(t.team)} style={{ borderTop: `1px solid ${colors.line}`, cursor: 'pointer', borderLeft: isSelected ? `3px solid ${colors.select}` : '3px solid transparent', background: isSelected ? `${colors.select}14` : (i % 2 ? 'rgba(0,0,0,0.015)' : 'transparent') }}>
                         <td style={{ ...td, fontWeight: isSelected ? 700 : 500, color: isSelected ? colors.select : colors.ink }}>{t.team}</td>
                         <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{t.headcount}</td>
                         <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace", color: t.rate < 60 ? colors.alert : t.rate < 80 ? colors.warn : colors.good }}>{t.rate}%</td>
@@ -433,14 +466,14 @@ export default function AttendanceDashboard({ records }) {
                 </tbody>
               </table>
             </div>
-            <div style={{ fontSize: 12, color: colors.muted, marginTop: 10 }}>Click a row to filter every tab to that team.</div>
+            <div style={{ fontSize: 12, color: colors.muted, marginTop: 10 }}>Click a row to include/exclude that team. Use the chip row above to multi-select. Recomputes all tabs.</div>
           </section>
         )}
 
         {tab === 'Employees' && (
           <section>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>By employee <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {scopeLabel}{team !== 'All teams' && ` · ${team}`}</span></h2>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>By employee <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {scopeLabel}{selectedTeams.length > 0 && ` · ${selectedTeams.join(', ')}`}{shiftFilter !== 'all' && ` · ${shiftFilter}`}</span></h2>
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name or ID" style={{ ...selectStyle, width: 200 }} />
             </div>
 
@@ -468,8 +501,9 @@ export default function AttendanceDashboard({ records }) {
                             <td style={{ ...td, color: colors.muted }}>{shortDate(date)}</td>
                             <td style={{ ...td, color: c, fontWeight: 500 }}>
                               {label}
-                              {rec?.present && <SourceDot source={rec.source} />}
-                              {rec?.shiftAnomaly && <span title="Off-shift attendance — flagged for review" style={{ marginLeft: 6, color: colors.anomaly, fontSize: 11 }}>&#9888;</span>}
+                              {rec?.wfh && <span style={{ marginLeft: 6, fontSize: 10, color: colors.select, border: `1px solid ${colors.select}`, borderRadius: 3, padding: '1px 4px' }}>WFH</span>}
+                              {rec?.present && !rec?.wfh && <SourceDot source={rec.source} />}
+                              {rec?.shiftAnomaly && <span title="Off-shift attendance flagged for review" style={{ marginLeft: 6, color: colors.anomaly, fontSize: 11 }}>&#9888;</span>}
                             </td>
                             <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec?.checkIn || '\u2014'}</td>
                             <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec?.checkOut || '\u2014'}</td>
@@ -518,7 +552,7 @@ export default function AttendanceDashboard({ records }) {
         {tab === 'Anomalies & Leave' && (
           <>
             <section style={{ marginBottom: 36 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 4px' }}>Chronic unauthorized absence <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {scopeLabel}{team !== 'All teams' && ` · ${team}`}</span></h2>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 4px' }}>Chronic unauthorized absence <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {scopeLabel}{selectedTeams.length > 0 && ` · ${selectedTeams.join(', ')}`}{shiftFilter !== 'all' && ` · ${shiftFilter}`}</span></h2>
               <div style={{ fontSize: 13, color: colors.muted, marginBottom: 14 }}>{chronicList.length} employee{chronicList.length === 1 ? '' : 's'} with 3+ days absent and no leave on record in this view.</div>
               <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, overflow: 'hidden', background: colors.panel }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -541,22 +575,41 @@ export default function AttendanceDashboard({ records }) {
             <section style={{ marginBottom: 36 }}>
               <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 4px' }}>Off-shift attendance <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {scopeLabel}</span></h2>
               <div style={{ fontSize: 13, color: colors.muted, marginBottom: 14 }}>
-                Presence recorded outside the employee's assigned shift window \u2014 e.g. a night-shift employee attending a daytime meeting. This is a flag for review, never a rejection: the person was genuinely present.
+                Presence recorded outside the employee assigned shift window. Flag for review only.
               </div>
               <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, overflow: 'hidden', background: colors.panel }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead><tr><th style={th}>Name</th><th style={th}>Date</th><th style={th}>Assigned shift</th><th style={th}>Actual window matched</th><th style={thR}>In \u2013 Out</th></tr></thead>
+                  <thead><tr><th style={th}>Name</th><th style={th}>Date</th><th style={th}>Assigned shift</th><th style={th}>Actual window matched</th></tr></thead>
                   <tbody>
                     {anomalyRecords.map((r, i) => (
                       <tr key={`${r.employeeId}-${r.date}`} style={{ borderTop: `1px solid ${colors.line}`, background: i % 2 ? 'rgba(0,0,0,0.015)' : 'transparent' }}>
                         <td style={{ ...td, fontWeight: 500 }}>{r.name}</td>
                         <td style={{ ...td, color: colors.muted }}>{shortDate(r.date)}</td>
-                        <td style={td}>{r.assignedShift || '\u2014'}</td>
-                        <td style={{ ...td, color: colors.anomaly, fontWeight: 500 }}>{r.matchedShift || '\u2014'}</td>
-                        <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{r.checkIn || '\u2014'} \u2013 {r.checkOut || '\u2014'}</td>
+                        <td style={td}>{r.assignedShift || '-'}</td>
+                        <td style={{ ...td, color: colors.anomaly, fontWeight: 500 }}>{r.matchedShift || '-'}</td>
                       </tr>
                     ))}
-                    {anomalyRecords.length === 0 && (<tr><td colSpan={5} style={{ padding: '24px 16px', textAlign: 'center', color: colors.muted }}>No off-shift attendance flagged in this view \u2014 also expected until shift assignment data actually arrives from Zoho.</td></tr>)}
+                    {anomalyRecords.length === 0 && (<tr><td colSpan={4} style={{ padding: '24px 16px', textAlign: 'center', color: colors.muted }}>No off-shift attendance flagged in this view. Expected until shift data arrives from Zoho.</td></tr>)}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section style={{ marginBottom: 36 }}>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 4px' }}>Work from home <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {scopeLabel}</span></h2>
+              <div style={{ fontSize: 13, color: colors.muted, marginBottom: 14 }}>Approved WFH overrides. Counts as present. Managed by team lead or admin via API.</div>
+              <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, overflow: 'hidden', background: colors.panel, marginTop: 14 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead><tr><th style={th}>Name</th><th style={th}>Date</th><th style={th}>Team</th></tr></thead>
+                  <tbody>
+                    {wfhRecords.map((r, i) => (
+                      <tr key={`${r.employeeId}-${r.date}`} style={{ borderTop: `1px solid ${colors.line}`, background: i % 2 ? 'rgba(0,0,0,0.015)' : 'transparent' }}>
+                        <td style={{ ...td, fontWeight: 500 }}>{r.name}<span style={{ marginLeft: 6, fontSize: 11, color: colors.select, border: `1px solid ${colors.select}`, borderRadius: 3, padding: '1px 4px' }}>WFH</span></td>
+                        <td style={{ ...td, color: colors.muted }}>{shortDate(r.date)}</td>
+                        <td style={{ ...td, fontSize: 12.5 }}>{r.team}</td>
+                      </tr>
+                    ))}
+                    {wfhRecords.length === 0 && (<tr><td colSpan={3} style={{ padding: '24px 16px', textAlign: 'center', color: colors.muted }}>No WFH approvals in this view.</td></tr>)}
                   </tbody>
                 </table>
               </div>
