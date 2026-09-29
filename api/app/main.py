@@ -280,13 +280,13 @@ def bulk_insert_attendance(payload: BulkAttendanceIn, user=Depends(get_current_u
     # Teams and employees have to exist before attendance can reference
     # them (foreign keys) — same Zoho-first ordering discussed earlier,
     # just enforced here structurally rather than by convention.
-    team_names = sorted({r.team_name.strip() for r in payload.records if r.team_name})
+    team_names = sorted({(r.team_name or "").strip() for r in payload.records if (r.team_name or "").strip()})
     execute_values(
         cur, "INSERT INTO teams (name) VALUES %s ON CONFLICT (name) DO NOTHING",
         [(t,) for t in team_names],
     )
     cur.execute("SELECT id, name FROM teams")
-    team_id_by_name = {name: tid for tid, name in cur.fetchall()}
+    team_id_by_name = {row["name"]: row["id"] for row in cur.fetchall()}
 
     employees = {(r.employee_id, r.employee_name) for r in payload.records}
     execute_values(
@@ -302,7 +302,7 @@ def bulk_insert_attendance(payload: BulkAttendanceIn, user=Depends(get_current_u
             (
                 r.employee_id, r.date, r.check_in, r.check_out, r.work_hours,
                 r.overtime_hours, r.late_in, r.early_out, r.present,
-                team_id_by_name.get(r.team_name.strip()), payload.source,
+                team_id_by_name.get((r.team_name or "").strip()), payload.source,
             )
             for r in chunk
         ]
@@ -323,6 +323,21 @@ def bulk_insert_attendance(payload: BulkAttendanceIn, user=Depends(get_current_u
             values,
         )
         inserted += len(chunk)
+
+    # Keep employees.current_team_id in sync with the latest attendance
+    # snapshot — otherwise /employees?team_id=... and employee->team joins
+    # stay NULL even though attendance_records.team_id is correct.
+    cur.execute(
+        """
+        UPDATE employees e SET current_team_id = latest.team_id
+        FROM (
+            SELECT DISTINCT ON (employee_id) employee_id, team_id
+            FROM attendance_records
+            ORDER BY employee_id, date DESC
+        ) AS latest
+        WHERE e.id = latest.employee_id AND latest.team_id IS NOT NULL
+        """
+    )
 
     cur.execute(
         "INSERT INTO sync_log (source, records_processed, records_failed, status, notes) VALUES (%s, %s, %s, %s, %s)",

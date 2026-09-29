@@ -79,9 +79,12 @@ services:
     build: ./api
     environment:
       DATABASE_URL: postgresql://attendance:attendance@db:5432/attendance
+      API_URL: http://api:8000
     depends_on:
       db:
         condition: service_healthy
+      api:
+        condition: service_started
     volumes:
       - ./data:/data
       - ./scripts:/scripts
