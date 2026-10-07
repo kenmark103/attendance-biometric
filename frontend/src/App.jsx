@@ -1,19 +1,59 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Link } from 'react-router-dom';
+import { Routes, Route, Link, Navigate, useNavigate } from 'react-router-dom';
 import AttendanceDashboard from './AttendanceDashboard.jsx';
 import AuthHeader from './components/AuthHeader.jsx';
 import LoginPage from './pages/LoginPage.jsx';
+import ChangePasswordPage from './pages/ChangePasswordPage.jsx';
+import UsersPage from './pages/UsersPage.jsx';
 import { fetchDayRecords, fetchCoverage } from './api.js';
+import { bootSession, getCurrentUser, subscribe, clearSession } from './auth.js';
 import logoUrl from './assets/tbl-logo.svg';
 import { colors } from './theme.js';
 
+function TopBar({ user, onLogout }) {
+  return (
+    <div style={{ maxWidth: 1120, margin: '0 auto', padding: '16px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `2px solid ${colors.primary}` }}>
+      <img src={logoUrl} alt="Technobrain" style={{ height: 46 }} />
+      <AuthHeader user={user} onLogout={onLogout} />
+    </div>
+  );
+}
+
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [booting, setBooting] = useState(true);
   const [records, setRecords] = useState(null);
   const [coverage, setCoverage] = useState(null);
   const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
+    let cancelled = false;
+    bootSession().then((u) => {
+      if (!cancelled) {
+        setUser(u);
+        setBooting(false);
+      }
+    });
+    const unsub = subscribe((u) => {
+      if (!cancelled) {
+        setUser(u);
+        if (!u) navigate('/login', { replace: true });
+      }
+    });
+    const onLogoutEvent = () => {
+      if (!cancelled) {
+        setUser(null);
+        navigate('/login', { replace: true });
+      }
+    };
+    window.addEventListener('auth:logout', onLogoutEvent);
+    return () => { cancelled = true; unsub(); window.removeEventListener('auth:logout', onLogoutEvent); };
+  }, []);
+
+  useEffect(() => {
+    if (!user || user.must_change_password) return;
     let cancelled = false;
     async function load() {
       try {
@@ -32,42 +72,65 @@ export default function App() {
     }
     load();
     return () => { cancelled = true; };
-  }, []);
+  }, [user]);
 
-  if (loading) {
-    return <div style={{ fontFamily: 'sans-serif', padding: 40, color: '#6E786F' }}>Loading attendance data from API...</div>;
+  function handleLogout() {
+    clearSession();
+    setUser(null);
+    setRecords(null);
+    setCoverage(null);
   }
-  if (error) {
-    return (
-      <div style={{ fontFamily: 'sans-serif', padding: 40, color: '#A63D2F' }}>
-        Could not load from API: {error}.<br />
-        <span style={{ color: '#6E786F', fontSize: 13 }}>
-          Is the API running at {import.meta.env.VITE_API_URL || '/api'}? Check <code>docker ps</code> and{' '}
-          <code>curl http://localhost:8001/health</code>.
-        </span>
-      </div>
-    );
+
+  if (booting) {
+    return <div style={{ fontFamily: 'sans-serif', padding: 40, color: '#6E786F' }}>Signing in...</div>;
   }
-  if (!records || records.length === 0) {
+
+  if (!user) {
     return (
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="*" element={
-          <div style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: colors.paper, minHeight: '100vh' }}>
-            <div style={{ maxWidth: 1120, margin: '0 auto', padding: '16px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `2px solid ${colors.primary}` }}>
-              <img src={logoUrl} alt="Technobrain" style={{ height: 46 }} />
-              <AuthHeader />
-            </div>
-            <div style={{ padding: 40, color: '#6E786F' }}>No attendance data returned from API. Have you run the loader yet? <code>docker compose --profile tools run --rm loader</code> <Link to="/login" style={{ color: colors.slate }}>Go to login</Link></div>
-          </div>
-        } />
+        <Route path="/login" element={<LoginPage onLogin={setUser} />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
   }
+
+  if (user.must_change_password) {
+    return (
+      <ChangePasswordPage
+        onChanged={(u) => setUser(u)}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="*" element={<AttendanceDashboard records={records} coverage={coverage} />} />
+      <Route path="/login" element={<Navigate to="/" replace />} />
+      <Route path="/users" element={
+        user.role === 'admin' ? (
+          <div style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: colors.paper, minHeight: '100vh' }}>
+            <TopBar user={user} onLogout={handleLogout} />
+            <UsersPage />
+          </div>
+        ) : (
+          <Navigate to="/" replace />
+        )
+      } />
+      <Route path="*" element={
+        loading ? (
+          <div style={{ fontFamily: 'sans-serif', padding: 40, color: '#6E786F' }}>Loading attendance data from API...</div>
+        ) : error ? (
+          <div style={{ fontFamily: 'sans-serif', padding: 40, color: '#A63D2F' }}>
+            Could not load from API: {error}.<br />
+            <span style={{ color: '#6E786F', fontSize: 13 }}>
+              Is the API running? Check <code>docker ps</code> and{' '}
+              <code>curl http://localhost:8001/health</code>.
+            </span>
+          </div>
+        ) : (
+          <AttendanceDashboard records={records || []} coverage={coverage} />
+        )
+      } />
     </Routes>
   );
 }

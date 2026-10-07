@@ -1,71 +1,97 @@
-# Attendance System — local dev
+# Attendance System
 
-## Run it
+Biometric + Zoho attendance dashboard (FastAPI + Postgres + Vite React).
+
+## Run it on any machine
+
+Prereqs: Docker + Docker Compose, any Python 3 (for the loader script only).
 
 ```bash
+git clone <this-repo> && cd <repo>
 cp .env.example .env
-# generate AUTH_SECRET: python -c "import secrets; print(secrets.token_hex(32))"
+# edit .env and set:
+#   JWT_SECRET=            <- required, 32+ chars. Generate:
+#                             python -c "import secrets; print(secrets.token_hex(32))"
+#   BOOTSTRAP_ADMIN_PASSWORD=  <- required, 12+ chars (first admin login)
+#   ENTRA_*                <- leave blank until IT provisions the App Registration;
+#                             email/password login works without it
 
 docker compose up -d --build
 ```
 
-Load your data — **this is now a plain HTTP client using only the Python
-standard library, no pip install at all**, so it can't hit the PyPI/SSL
-build failure a `loader` Docker service used to:
+Fresh database? The schema (including auth tables) is created automatically
+by `db/init.sql`. **Existing** database from before auth? Apply the
+one-time migration once:
+
+```bash
+docker compose exec -T db psql -U attendance -d attendance \
+  -f /dev/stdin < db/migrations/004_auth.sql
+```
+
+Load data (needs `data/data.json`, gitignored — never committed):
 
 ```bash
 python scripts/load_data.py data/data.json
+# or: docker compose --profile tools run --rm loader
 ```
 
-It POSTs to the already-running `api` container's `/attendance/bulk` and
-`/leave/bulk` endpoints, which handle team/employee upserts and chunked
-inserts internally. Any Python 3 on your machine works — nothing to build.
+Open `http://localhost:3001`, sign in with email as
+`admin@attendance.internal` (the bootstrap admin). API health:
+`http://localhost:8001/health`. API docs: `http://localhost:8001/docs`.
 
-Check it:
-```bash
-curl http://localhost:8001/health
-curl "http://localhost:8001/attendance?date_from=2026-08-01&date_to=2026-08-03"
+Ports (host): `5434` postgres, `8001` api, `3001` frontend. The browser
+only ever talks to `:3001` — the frontend proxies `/api/*` to the API on
+the same origin, so auth cookies work with no CORS.
+
+## Auth in one paragraph
+
+Two login methods, one session shape: Microsoft Entra SSO (single tenant)
+plus admin-created local email/password accounts. Both end in our own
+HS256 JWT (15 min, browser memory only) + rotating opaque refresh cookie
+(`httpOnly`, 7-day sliding / 30-day absolute). Roles `admin > manager >
+viewer`: SSO users get them from Entra App Roles (else a pre-created DB
+row, else denied); local users from the DB. Every request re-reads the
+user row, so deactivation/role changes apply immediately. `users`
+(system logins) is a different table from `employees` (attendance
+subjects) — manage logins on the in-app Users page (admin only).
+
+Reset a password: `docker exec <api> python -m app.auth.cli
+reset-admin-password <email>` (reads from `NEW_PASSWORD` env or prompt).
+
+## Backend layout (`api/app/`)
+
+```
+main.py            app factory, router wiring, lifespan startup, /health
+core/              settings (env), db (psycopg2 pool-less helper),
+                   deps (current_user, require_role, viewer/manager/admin)
+auth/              security (argon2id, JWT, refresh hashing),
+                   sessions (issue/rotate/revoke + cookies + audit),
+                   local (login/refresh/logout/me/change-password),
+                   microsoft (Entra PKCE login + callback),
+                   admin (/users CRUD, /auth/events),
+                   bootstrap (first-admin seed), cli (password reset)
+routers/           schemas (pydantic), attendance (teams/employees/records,
+                   leave/holidays/coverage/sync-log/bulk), wfh (approvals)
+ingestion/         COSEC biometric sync worker (polls device -> staging)
 ```
 
-API docs: `http://localhost:8001/docs`
+Tests: `docker compose exec api pytest tests/ -v` (66 tests: auth per the
+implementation guide + ingestion). Auth tests need the compose Postgres.
 
-## Why there's no `loader` service anymore
+## Troubleshooting
 
-There used to be one, built from the same Dockerfile as `api`. Two
-problems with that: Compose tagged it as a **separate** image
-(`attendance-system-loader`, not reusing `attendance-system-api`), so it
-rebuilt from scratch — and on this network, that rebuild's `pip install`
-step fails with a TLS handshake error against `files.pythonhosted.org`
-(a proxy/firewall issue on the office network, not a bug in the Dockerfile).
-
-Routing ingestion through `/attendance/bulk` instead removes the problem
-structurally: the script talking HTTP+JSON needs no dependencies beyond
-what ships with Python, so there's no build step left to fail. This also
-means the same two endpoints are ready for real biometric/Zoho ingestion
-later — same trust-tier discipline, `source` is a property of the whole
-batch call, never a per-row field the caller sets.
-
-## Project name pinned
-
-`name: attendance-system` is set explicitly at the top of
-`docker-compose.yml`. Without it, Compose derives the image-tag prefix
-from whatever folder the repo happens to be cloned into — which is what
-caused the `attendance-system-*` vs `attendance-biometric-*` mismatch
-earlier. This repo can now be cloned into any folder name safely.
-
-## What's still stubbed, and why
-
-- **`employee_history`, `shift_templates` matching, `holidays`** — tables
-  exist, nothing populates them yet. They activate once Zoho's
-  employee/shift/holiday sync exists — nothing to match or populate
-  against until then.
-- **`audit_log`** — table exists, nothing writes to it. Wire it in once
-  there's a real manual-override path to audit.
-- **Real biometric ingestion** — no code yet; same `/attendance/bulk`
-  endpoint the loader uses is the intended target, with `source='biometric'`
-  once the COSEC device is reachable and its payload format is confirmed.
-- **CORS wide open, `AUTH_REQUIRED=false` by default** — fine for
-  localhost, not for anywhere reachable outside your machine.
+- **Login page loops / "Could not load from API"**: hard-refresh
+  (`Ctrl+Shift+R`). `index.html` is served no-cache, but a previously
+  cached copy may still reference the old direct-to-`:8001` bundle.
+- **API container restarting**: almost always `JWT_SECRET` missing/short —
+  `docker logs attendance-system-api-1` prints the exact requirement.
+- **Ingestor restarting**: missing `COSEC_*` vars used to crash-loop it;
+  now it idles in standby until they're set. If vars are set but the
+  device IP is unreachable from your network, it logs retries — normal
+  until the poller runs on the office network.
+- **SSO button errors**: expected until `ENTRA_TENANT_ID/CLIENT_ID/SECRET`
+  are set (then it returns 503 `sso_not_configured`). Use email login
+  meanwhile.
 
 ## Re-running the loader
 

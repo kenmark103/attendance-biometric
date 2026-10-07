@@ -1,17 +1,11 @@
-// API layer — fetches attendance, leave, and holidays and merges them into
-// rich per-day records. Deliberately does NOT flatten back into the old
-// fixed-position tuple shape: source, shift_anomaly, and holiday data have
-// nowhere to live in that shape, which is exactly what was being dropped.
-const API_BASE = import.meta.env.VITE_API_URL || '/api';
+// API layer — same-origin (nginx /api/ prefix in prod, vite proxy in dev),
+// refresh cookie sent automatically. Access token in memory via auth.js.
+import { apiFetch } from './auth.js';
+
+const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
 function apiUrl(path) {
-  if (API_BASE === '/api') return `/api${path}`;
-  return `${API_BASE.replace(/\/$/, '')}${path}`;
-}
-
-function authHeaders() {
-  const t = localStorage.getItem('token');
-  return t ? { Authorization: `Bearer ${t}` } : {};
+  return `${API_BASE}${path}`;
 }
 
 async function getJSON(path, params = {}) {
@@ -20,18 +14,25 @@ async function getJSON(path, params = {}) {
     if (v !== undefined && v !== null && v !== '') p.set(k, v);
   });
   const qs = p.toString() ? `?${p}` : '';
-  const r = await fetch(apiUrl(`${path}${qs}`), { headers: { ...authHeaders() } });
+  const r = await apiFetch(apiUrl(`${path}${qs}`));
   if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r.json();
 }
 
 async function postJSON(path, body) {
-  const r = await fetch(apiUrl(path), { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) });
+  const r = await apiFetch(apiUrl(path), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error(`${path} ${r.status}: ${await r.text()}`);
   return r.json();
 }
+
+async function patchJSON(path, body) {
+  const r = await apiFetch(apiUrl(path), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`${path} ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
 async function delJSON(path) {
-  const r = await fetch(apiUrl(path), { method: 'DELETE', headers: { ...authHeaders() } });
+  const r = await apiFetch(apiUrl(path), { method: 'DELETE' });
   if (!r.ok) throw new Error(`${path} ${r.status}: ${await r.text()}`);
   return r.json();
 }
@@ -45,6 +46,15 @@ export const fetchCoverage = () => getJSON('/stats/coverage');
 export const fetchSyncLog = (limit = 50) => getJSON('/sync-log', { limit });
 export const createWfh = (payload) => postJSON('/wfh', payload);
 export const deleteWfh = (id) => delJSON(`/wfh/${id}`);
+
+// --- auth / admin ---
+export const changePassword = (current_password, new_password) =>
+  postJSON('/auth/change-password', { current_password, new_password });
+export const fetchUsers = () => getJSON('/users');
+export const createUser = (payload) => postJSON('/users', payload);
+export const patchUser = (id, payload) => patchJSON(`/users/${id}`, payload);
+export const resetUserPassword = (id) => postJSON(`/users/${id}/reset-password`, {});
+export const fetchAuthEvents = (limit = 100) => getJSON('/auth/events', { limit });
 
 function toDateStr(d) {
   return d ? String(d).slice(0, 10) : d;

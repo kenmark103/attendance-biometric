@@ -5,10 +5,10 @@ RUN npm install --silent
 COPY index.html vite.config.js ./
 COPY public ./public
 COPY src ./src
-ARG VITE_API_URL=http://localhost:8001
-ARG VITE_AUTH_URL=http://localhost:8002
+# Same-origin by default: the browser reaches the API through nginx's
+# /api/ prefix, so access/refresh cookies work without CORS.
+ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
-ENV VITE_AUTH_URL=$VITE_AUTH_URL
 RUN npm run build
 
 FROM nginx:alpine

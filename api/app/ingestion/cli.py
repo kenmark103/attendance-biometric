@@ -54,8 +54,17 @@ def cmd_run(_args) -> int:
     try:
         settings = load_settings()
     except ConfigError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+        # No COSEC credentials yet (fresh clone, creds not provisioned):
+        # stay up in standby instead of exit(2), which with
+        # `restart: unless-stopped` becomes a crash-loop. Polling starts
+        # on the next `docker compose up -d` / restart once the env is set.
+        print(f"ingestor standby: {exc}", file=sys.stderr)
+        print("ingestor standby: set COSEC_BASE_URL/COSEC_USER/COSEC_PASSWORD,"
+              " then `docker compose restart ingestor`. Sleeping.",
+              file=sys.stderr)
+        import time as _time
+        while True:
+            _time.sleep(3600)
     engine = _engine(settings.database_url)
     run_loop(engine, settings)
     return 0

@@ -19,7 +19,13 @@ from app.ingestion.service import ingest_range
 pytestmark = pytest.mark.db
 
 H = "UserID|UserName|ProcessDate|Punch1|Punch2|WorkingShift|LateIn|EarlyOut|Overtime|WorkTime"
-MIGRATION = os.path.join(os.path.dirname(__file__), "..", "..", "..", "db", "migrations", "003_cosec_ingestion.sql")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_MIGRATION_CANDIDATES = [
+    os.path.abspath(os.path.join(_HERE, "..", "..", "..", "db", "migrations", "003_cosec_ingestion.sql")),
+    "/app/db/migrations/003_cosec_ingestion.sql",  # container with ./db mounted at /app/db
+]
+MIGRATION = next((p for p in _MIGRATION_CANDIDATES if os.path.exists(p)),
+                 _MIGRATION_CANDIDATES[0])
 
 
 def _engine():

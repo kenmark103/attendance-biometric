@@ -113,21 +113,66 @@ CREATE TABLE sync_log (
 -- Who's allowed into the DASHBOARD APP — distinct from `employees`, who are
 -- the SUBJECTS of attendance. An admin/manager may or may not also be an
 -- employee tracked in the system; this table is the access whitelist.
-CREATE TABLE app_users (
-    id                  SERIAL PRIMARY KEY,
-    email               TEXT UNIQUE NOT NULL,
-    name                TEXT,
-    role                TEXT NOT NULL DEFAULT 'viewer',  -- 'admin' | 'management' | 'viewer'
-    employee_id         TEXT REFERENCES employees(id),   -- nullable: not every app user is a tracked employee
-    provider             TEXT,          -- 'google' | 'entra' — which provider they last logged in via
-    provider_user_id     TEXT,          -- the provider's own subject/oid claim
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_login_at        TIMESTAMPTZ
+-- Auth: local email/password (argon2id) + Microsoft Entra SSO. Our own
+-- HS256 JWT for both; downstream code never sees Entra tokens.
+CREATE TABLE users (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email               TEXT UNIQUE NOT NULL,   -- stored lowercase
+    display_name        TEXT,
+    role                TEXT NOT NULL DEFAULT 'viewer'
+                        CHECK (role IN ('admin', 'manager', 'viewer')),
+    auth_provider       TEXT NOT NULL DEFAULT 'local'
+                        CHECK (auth_provider IN ('local', 'entra')),
+    password_hash       TEXT,                   -- local only
+    entra_oid           TEXT UNIQUE,
+    entra_tid           TEXT,
+    is_active           BOOLEAN NOT NULL DEFAULT TRUE,
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+    failed_login_count  INTEGER NOT NULL DEFAULT 0,
+    locked_until        TIMESTAMPTZ,
+    last_login_at       TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX idx_users_email ON users (email);
+CREATE INDEX idx_users_entra_oid ON users (entra_oid);
+
+-- Refresh-token families: opaque token stored as SHA-256 hash, 7-day
+-- sliding / 30-day absolute cap, rotated on every use.
+CREATE TABLE refresh_tokens (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    family_id         UUID NOT NULL,
+    token_hash        TEXT UNIQUE NOT NULL,
+    issued_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at        TIMESTAMPTZ NOT NULL,
+    family_expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at        TIMESTAMPTZ,
+    replaced_by       UUID REFERENCES refresh_tokens(id),
+    user_agent        TEXT,
+    ip                TEXT
+);
+CREATE INDEX idx_refresh_family ON refresh_tokens (family_id);
+CREATE INDEX idx_refresh_user ON refresh_tokens (user_id);
+CREATE INDEX idx_refresh_hash ON refresh_tokens (token_hash);
+
+-- Auth audit trail. Never stores passwords or token hashes.
+CREATE TABLE auth_events (
+    id         SERIAL PRIMARY KEY,
+    at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    user_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+    email      TEXT,
+    event      TEXT NOT NULL,
+    provider   TEXT,
+    ip         TEXT,
+    user_agent TEXT,
+    detail     TEXT
+);
+CREATE INDEX idx_auth_events_at ON auth_events (at DESC);
 
 CREATE TABLE audit_log (
     id                  SERIAL PRIMARY KEY,
-    actor_user_id       INTEGER REFERENCES app_users(id),
+    actor_user_id       UUID REFERENCES users(id),
     target_employee_id  TEXT REFERENCES employees(id),
     action              TEXT NOT NULL,   -- 'manual_override' | 'role_change' | ...
     before_value         JSONB,
@@ -141,7 +186,7 @@ CREATE TABLE wfh_approvals (
     id              SERIAL PRIMARY KEY,
     employee_id     TEXT NOT NULL REFERENCES employees(id),
     date            DATE NOT NULL,
-    approved_by     INTEGER REFERENCES app_users(id),
+    approved_by     UUID REFERENCES users(id),
     reason          TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (employee_id, date)

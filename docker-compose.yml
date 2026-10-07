@@ -1,4 +1,4 @@
-# Host ports are remapped (5434 / 8001 / 8002 / 3001) to avoid clashing
+# Host ports are remapped (5434 / 8001 / 3001) to avoid clashing
 # with your other local projects. Internal container-to-container traffic
 # is unaffected — services still talk to each other on 5432/8000 inside
 # the docker network; only what's exposed to your machine changed.
@@ -28,49 +28,45 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://attendance:attendance@db:5432/attendance
-      AUTH_SECRET: ${AUTH_SECRET}
-      AUTH_REQUIRED: ${AUTH_REQUIRED:-false}
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
+      ACCESS_TTL_SECONDS: ${ACCESS_TTL_SECONDS:-900}
+      REFRESH_TTL_DAYS: ${REFRESH_TTL_DAYS:-7}
+      REFRESH_ABSOLUTE_DAYS: ${REFRESH_ABSOLUTE_DAYS:-30}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ENTRA_TENANT_ID: ${ENTRA_TENANT_ID:-}
+      ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID:-}
+      ENTRA_CLIENT_SECRET: ${ENTRA_CLIENT_SECRET:-}
+      ENTRA_REDIRECT_URI: ${ENTRA_REDIRECT_URI:-http://localhost:8001/auth/microsoft/callback}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@attendance.internal}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
     ports:
       - "8001:8000"
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     volumes:
       - ./api/app:/app/app
+      - ./api/tests:/app/tests
+      - ./db:/app/db
       - ./scripts:/scripts
       - ./data:/data
-
-  auth-service:
-    build: ./auth-service
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://attendance:attendance@db:5432/attendance
-      AUTH_SECRET: ${AUTH_SECRET}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      ENTRA_TENANT_ID: ${ENTRA_TENANT_ID:-}
-      ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID:-}
-      ENTRA_CLIENT_SECRET: ${ENTRA_CLIENT_SECRET:-}
-    ports:
-      - "8002:8000"
-    depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - ./auth-service/app:/app/app
 
   frontend:
     build:
       context: ./frontend
-      args:
-        VITE_API_URL: http://localhost:8001
-        VITE_AUTH_URL: http://localhost:8002
     restart: unless-stopped
     ports:
       - "3001:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
   # COSEC attendance ingestion worker — same image as api, different command.
   # Polls attendance-daily every POLL_INTERVAL_SECONDS and upserts the raw
