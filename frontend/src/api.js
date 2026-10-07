@@ -41,6 +41,8 @@ export const fetchAttendance = (params) => getJSON('/attendance', params);
 export const fetchLeave = (params) => getJSON('/leave', params);
 export const fetchHolidays = (params) => getJSON('/holidays', params);
 export const fetchWfh = (params) => getJSON('/wfh', params);
+export const fetchCoverage = () => getJSON('/stats/coverage');
+export const fetchSyncLog = (limit = 50) => getJSON('/sync-log', { limit });
 export const createWfh = (payload) => postJSON('/wfh', payload);
 export const deleteWfh = (id) => delJSON(`/wfh/${id}`);
 
@@ -54,21 +56,38 @@ function toTimeStr(t) {
 /**
  * One record per (employee, date) that actually exists in attendance_records.
  *
+ * Paginates through /attendance (and /leave, /wfh) so a dataset larger
+ * than one page is never silently truncated — the old single-request
+ * shape dropped everything past the API's row limit.
+ *
  * Known limitation, worth knowing about rather than silently working around:
  * this only covers dates that HAVE a row. If a sync ever fails to write a
  * day at all (not present=false, but no row whatsoever — the "partial sync"
  * failure mode from the design discussion), that gap is invisible here.
- * Detecting it properly needs each employee's active date range, which the
- * schema doesn't cleanly expose yet (employees.status is active/offboarded,
- * not a date range) — flagging this as a real open item, not solving it
- * with a guess the way the old hasLeaveData hack did.
+ * The Sync-check tab + /stats/coverage exists precisely to surface that:
+ * compare per-date counts against the source file instead of trusting
+ * this list's length.
  */
+const PAGE_SIZE = 5000;
+
+async function fetchAllPaged(fetchFn, params = {}) {
+  const out = [];
+  let offset = 0;
+  for (;;) {
+    const page = await fetchFn({ ...params, limit: PAGE_SIZE, offset });
+    out.push(...page);
+    if (page.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+  return out;
+}
+
 export async function fetchDayRecords({ date_from, date_to, team_id } = {}) {
   const [attendance, leave, holidays, wfh] = await Promise.all([
-    fetchAttendance({ date_from, date_to, team_id }),
-    fetchLeave({ date_from, date_to }),
+    fetchAllPaged(fetchAttendance, { date_from, date_to, team_id }),
+    fetchAllPaged(fetchLeave, { date_from, date_to }),
     fetchHolidays({ date_from, date_to }),
-    fetchWfh({ date_from, date_to }).catch(() => []),
+    fetchAllPaged(fetchWfh, { date_from, date_to }).catch(() => []),
   ]);
 
   const holidayByDate = new Map(holidays.map((h) => [toDateStr(h.date), h.name]));

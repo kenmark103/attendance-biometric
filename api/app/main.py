@@ -139,6 +139,8 @@ def get_attendance(
     team_id: Optional[int] = None,
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    limit: int = Query(5000, ge=1, le=20000),
+    offset: int = Query(0, ge=0),
     user=Depends(get_current_user),
 ):
     conn = get_conn()
@@ -169,9 +171,9 @@ def get_attendance(
         LEFT JOIN teams t ON t.id = a.team_id
         {where}
         ORDER BY a.date DESC, e.name
-        LIMIT 1000
+        LIMIT %s OFFSET %s
         """,
-        params,
+        [*params, limit, offset],
     )
     rows = cur.fetchall()
     cur.close()
@@ -184,6 +186,8 @@ def get_leave(
     employee_id: Optional[str] = None,
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    limit: int = Query(5000, ge=1, le=20000),
+    offset: int = Query(0, ge=0),
     user=Depends(get_current_user),
 ):
     conn = get_conn()
@@ -206,9 +210,9 @@ def get_leave(
         JOIN employees e ON e.id = l.employee_id
         {where}
         ORDER BY l.date DESC
-        LIMIT 1000
+        LIMIT %s OFFSET %s
         """,
-        params,
+        [*params, limit, offset],
     )
     rows = cur.fetchall()
     cur.close()
@@ -231,7 +235,89 @@ def get_holidays(
     if date_to:
         clauses.append("date <= %s"); params.append(date_to)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    cur.execute(f"SELECT id, date, name, source FROM holidays {where} ORDER BY date")
+    cur.execute(f"SELECT id, date, name, source FROM holidays {where} ORDER BY date", params)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+@app.get("/stats/coverage")
+def stats_coverage(user=Depends(get_current_user)):
+    """Sync-verification aggregate: proves what actually landed in the DB.
+
+    Returns total attendance rows, date range, per-date counts, per-month
+    counts, employee/team counts, leave + holiday + wfh totals, and the
+    latest sync_log entries — everything the Sync-check tab needs to
+    compare DB state against the source file, in one request.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) AS n, MIN(date) AS dmin, MAX(date) AS dmax FROM attendance_records"
+    )
+    totals = cur.fetchone()
+    cur.execute(
+        "SELECT date, COUNT(*) AS n FROM attendance_records GROUP BY date ORDER BY date"
+    )
+    per_date = cur.fetchall()
+    cur.execute(
+        "SELECT to_char(date, 'YYYY-MM') AS month, COUNT(*) AS n "
+        "FROM attendance_records GROUP BY 1 ORDER BY 1"
+    )
+    per_month = cur.fetchall()
+    cur.execute("SELECT COUNT(*) AS n FROM employees")
+    n_employees = cur.fetchone()["n"]
+    cur.execute("SELECT COUNT(*) AS n FROM teams")
+    n_teams = cur.fetchone()["n"]
+    cur.execute("SELECT COUNT(*) AS n FROM leave_records")
+    n_leave = cur.fetchone()["n"]
+    cur.execute("SELECT COUNT(*) AS n FROM holidays")
+    n_holidays = cur.fetchone()["n"]
+    cur.execute("SELECT COUNT(*) AS n FROM wfh_approvals")
+    n_wfh = cur.fetchone()["n"]
+    cur.execute(
+        "SELECT id, source, run_at, records_processed, records_failed, status, notes "
+        "FROM sync_log ORDER BY id DESC LIMIT 20"
+    )
+    sync_log = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {
+        "attendance_rows": totals["n"],
+        "date_min": str(totals["dmin"]) if totals["dmin"] else None,
+        "date_max": str(totals["dmax"]) if totals["dmax"] else None,
+        "per_date": [{"date": str(r["date"]), "count": r["n"]} for r in per_date],
+        "per_month": [{"month": r["month"], "count": r["n"]} for r in per_month],
+        "employees": n_employees,
+        "teams": n_teams,
+        "leave_rows": n_leave,
+        "holidays": n_holidays,
+        "wfh_rows": n_wfh,
+        "sync_log": [
+            {
+                "id": r["id"],
+                "source": r["source"],
+                "run_at": str(r["run_at"]),
+                "records_processed": r["records_processed"],
+                "records_failed": r["records_failed"],
+                "status": r["status"],
+                "notes": r["notes"],
+            }
+            for r in sync_log
+        ],
+    }
+
+
+@app.get("/sync-log")
+def list_sync_log(limit: int = Query(50, ge=1, le=200), user=Depends(get_current_user)):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, source, run_at, records_processed, records_failed, status, notes "
+        "FROM sync_log ORDER BY id DESC LIMIT %s",
+        (limit,),
+    )
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -454,6 +540,8 @@ def list_wfh(
     employee_id: Optional[str] = None,
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    limit: int = Query(5000, ge=1, le=20000),
+    offset: int = Query(0, ge=0),
     user=Depends(get_current_user),
 ):
     conn = get_conn()
@@ -474,9 +562,9 @@ def list_wfh(
         JOIN employees e ON e.id = w.employee_id
         LEFT JOIN teams t ON t.id = e.current_team_id
         {where}
-        ORDER BY w.date DESC LIMIT 1000
+        ORDER BY w.date DESC LIMIT %s OFFSET %s
         """,
-        params,
+        [*params, limit, offset],
     )
     rows = cur.fetchall()
     cur.close()

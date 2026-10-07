@@ -3,12 +3,13 @@ import { Routes, Route, Link } from 'react-router-dom';
 import AttendanceDashboard from './AttendanceDashboard.jsx';
 import AuthHeader from './components/AuthHeader.jsx';
 import LoginPage from './pages/LoginPage.jsx';
-import { fetchDayRecords } from './api.js';
+import { fetchDayRecords, fetchCoverage } from './api.js';
 import logoUrl from './assets/tbl-logo.svg';
 import { colors } from './theme.js';
 
 export default function App() {
   const [records, setRecords] = useState(null);
+  const [coverage, setCoverage] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -17,9 +18,10 @@ export default function App() {
     async function load() {
       try {
         setLoading(true);
-        const recs = await fetchDayRecords();
+        const [recs, cov] = await Promise.all([fetchDayRecords(), fetchCoverage().catch(() => null)]);
         if (!cancelled) {
           setRecords(recs);
+          setCoverage(cov);
           setError(null);
         }
       } catch (e) {
@@ -65,7 +67,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route path="*" element={<AttendanceDashboard records={records} />} />
+      <Route path="*" element={<AttendanceDashboard records={records} coverage={coverage} />} />
     </Routes>
   );
 }

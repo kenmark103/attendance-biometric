@@ -72,6 +72,31 @@ services:
     depends_on:
       - api
 
+  # COSEC attendance ingestion worker — same image as api, different command.
+  # Polls attendance-daily every POLL_INTERVAL_SECONDS and upserts the raw
+  # (user_id, process_date) rows. No ports: never serves traffic.
+  ingestor:
+    build: ./api
+    command: python -m app.ingestion.cli run
+    environment:
+      DATABASE_URL: postgresql://attendance:attendance@db:5432/attendance
+      COSEC_BASE_URL: ${COSEC_BASE_URL}
+      COSEC_USER: ${COSEC_USER}
+      COSEC_PASSWORD: ${COSEC_PASSWORD}
+      COSEC_TIMEOUT_SECONDS: ${COSEC_TIMEOUT_SECONDS:-60}
+      COSEC_MAX_RANGE_DAYS: ${COSEC_MAX_RANGE_DAYS:-31}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-300}
+      POLL_LOOKBACK_DAYS: ${POLL_LOOKBACK_DAYS:-3}
+      MAX_PLAUSIBLE_SPAN_MIN: ${MAX_PLAUSIBLE_SPAN_MIN:-960}
+      MAX_MALFORMED_RATIO: ${MAX_MALFORMED_RATIO:-0.05}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./api/app:/app/app
+      - ./data:/data
+    restart: unless-stopped
+
   # One-off, not started by `docker compose up`. Run explicitly:
   #   docker compose --profile tools run --rm loader
   # No host pip install needed — psycopg2 already lives in this image.

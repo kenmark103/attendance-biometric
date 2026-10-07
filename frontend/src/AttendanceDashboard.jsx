@@ -31,6 +31,11 @@ function monthName(dateStr) {
   const d = parseDate(dateStr);
   return `${MONTH_FULL[d.getMonth()]} ${d.getFullYear()}`;
 }
+// Bi-weekly = semi-monthly halves: 1st–15th and 16th–month-end.
+function halfOf(dateStr) {
+  return parseDate(dateStr).getDate() <= 15 ? 'H1' : 'H2';
+}
+const HALF_LABEL = { H1: '1–15', H2: '16–end' };
 
 // --- status classification -------------------------------------------
 // Deliberately no "exempt" bucket reconstructed via guesswork — that field
@@ -66,35 +71,16 @@ function leaveLabel(rec) {
 }
 
 function computeDerived(records) {
+  // allDates: EVERY date present in the data, weekends included — the period
+  // navigator must reflect data reality so gaps can be spotted. Working-day
+  // stats below still exclude weekends from rate denominators.
+  const allDates = [...new Set(records.map((r) => r.date))].sort();
   const weekdayRecordsAll = records.filter((r) => !isWeekend(r.date));
-  const sortedDates = [...new Set(weekdayRecordsAll.map((r) => r.date))].sort();
-  const WEEKS = [];
-  sortedDates.forEach((date) => {
-    const last = WEEKS[WEEKS.length - 1];
-    if (last) {
-      const prev = parseDate(last.dates[last.dates.length - 1]);
-      const cur = parseDate(date);
-      const gapDays = Math.round((cur - prev) / 86400000);
-      if (gapDays <= 1) {
-        last.dates.push(date);
-        return;
-      }
-    }
-    WEEKS.push({ dates: [date] });
-  });
-  WEEKS.forEach((w) => {
-    w.start = w.dates[0];
-    w.end = w.dates[w.dates.length - 1];
-    w.label = `${shortDate(w.start)}\u2013${parseDate(w.end).getDate()}`;
-    const counts = {};
-    w.dates.forEach((d) => { const k = monthKey(d); counts[k] = (counts[k] || 0) + 1; });
-    w.month = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
-  });
-  const MONTHS = [...new Set(WEEKS.map((w) => w.month))].sort().map((key) => ({
-    key, label: monthName(WEEKS.find((w) => w.month === key).dates[0]),
+  const MONTHS = [...new Set(allDates.map(monthKey))].sort().map((key) => ({
+    key, label: monthName(allDates.find((d) => monthKey(d) === key)),
   }));
   const ALL_TEAMS = [...new Set(weekdayRecordsAll.map((r) => r.team))].sort();
-  return { weekdayRecordsAll, WEEKS, MONTHS, ALL_TEAMS };
+  return { allDates, weekdayRecordsAll, MONTHS, ALL_TEAMS };
 }
 
 function DayChips({ empId, dates, weekdayRecordsAll }) {
@@ -104,13 +90,29 @@ function DayChips({ empId, dates, weekdayRecordsAll }) {
     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 280 }}>
       {dates.map((date) => {
         const rec = byDate[date];
+        if (!rec && isWeekend(date)) {
+          return (
+            <div
+              key={date}
+              title={`${dayLabel(date)} ${shortDate(date)} — weekend (no shift expected)`}
+              style={{
+                width: 22, height: 22, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 10.5, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600,
+                background: colors.paper, color: colors.muted, border: `1px dashed ${colors.line}`,
+                flexShrink: 0,
+              }}
+            >
+              {dayLabel(date)[0]}
+            </div>
+          );
+        }
         const status = rec ? dayStatus(rec) : 'unauthorized';
         const c = STATUS_COLOR[status];
         const label = rec ? (rec.isHoliday ? rec.holidayName : (leaveLabel(rec) || STATUS_LABEL[status])) : 'No record';
         return (
           <div
             key={date}
-            title={`${dayLabel(date)} ${shortDate(date)} \u2014 ${label}${rec?.shiftAnomaly ? ' (off-shift)' : ''}`}
+            title={`${dayLabel(date)} ${shortDate(date)} — ${label}${rec?.shiftAnomaly ? ' (off-shift)' : ''}`}
             style={{
               width: 22, height: 22, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 10.5, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600,
@@ -136,16 +138,18 @@ function SourceDot({ source }) {
   );
 }
 
-const TABS = ['Overview', 'Teams', 'Employees', 'Anomalies & Leave'];
+const TABS = ['Overview', 'Teams', 'Employees', 'Anomalies & Leave', 'Sync check'];
 
-export default function AttendanceDashboard({ records }) {
-  const { weekdayRecordsAll, WEEKS, MONTHS, ALL_TEAMS } = useMemo(() => computeDerived(records), [records]);
+export default function AttendanceDashboard({ records, coverage }) {
+  const { allDates, weekdayRecordsAll, MONTHS, ALL_TEAMS } = useMemo(() => computeDerived(records), [records]);
 
   const [tab, setTab] = useState('Overview');
   const [selectedTeams, setSelectedTeams] = useState([]); // empty = all teams
   const [shiftFilter, setShiftFilter] = useState('all'); // all|day|night|hybrid
-  const [monthFilter, setMonthFilter] = useState('All months');
-  const [weekIdx, setWeekIdx] = useState(-1);
+  // Period navigation: month -> bi-weekly half (1-15 / 16-end) -> single day.
+  const [monthFilter, setMonthFilter] = useState('all');
+  const [halfFilter, setHalfFilter] = useState('all'); // all|H1|H2
+  const [dayFilter, setDayFilter] = useState('all'); // all|<date>
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState('unauthorized');
   const [sortDir, setSortDir] = useState('desc');
@@ -160,52 +164,58 @@ export default function AttendanceDashboard({ records }) {
     return rows;
   }, [selectedTeams, shiftFilter, weekdayRecordsAll]);
 
-  const visibleWeeks = useMemo(() => {
-    if (monthFilter === 'All months') return WEEKS;
-    return WEEKS.filter((w) => w.month === monthFilter);
-  }, [monthFilter, WEEKS]);
+  // Dates surviving the month/half picker (weekends included — nav shows data).
+  const visibleDates = useMemo(() => allDates.filter((d) => {
+    if (monthFilter !== 'all' && monthKey(d) !== monthFilter) return false;
+    if (halfFilter !== 'all' && halfOf(d) !== halfFilter) return false;
+    return true;
+  }), [allDates, monthFilter, halfFilter]);
 
-  function handleMonthChange(val) { setMonthFilter(val); setWeekIdx(-1); }
+  function handleMonthChange(val) { setMonthFilter(val); setHalfFilter('all'); setDayFilter('all'); }
+  function handleHalfChange(val) { setHalfFilter(val); setDayFilter('all'); }
   function toggleTeam(t) {
     setSelectedTeams((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]);
   }
   function handleTeamClick(t) { toggleTeam(t); }
   function clearTeams() { setSelectedTeams([]); }
 
-  const isAggregate = weekIdx === -1 || !visibleWeeks[weekIdx];
+  const monthLabel = monthFilter === 'all'
+    ? 'All months'
+    : (MONTHS.find((m) => m.key === monthFilter)?.label || monthFilter);
+  const isSingleDay = dayFilter !== 'all';
   const scopeDates = useMemo(() => {
-    if (isAggregate) return visibleWeeks.flatMap((w) => w.dates);
-    return visibleWeeks[weekIdx].dates;
-  }, [visibleWeeks, weekIdx, isAggregate]);
-  const scopeLabel = isAggregate
-    ? (monthFilter === 'All months' ? `All ${WEEKS.length} weeks` : monthFilter)
-    : visibleWeeks[weekIdx].label;
+    if (isSingleDay) return [dayFilter];
+    return visibleDates;
+  }, [isSingleDay, dayFilter, visibleDates]);
+  const scopeLabel = isSingleDay
+    ? `${dayLabel(dayFilter)} ${shortDate(dayFilter)}`
+    : halfFilter === 'all'
+      ? (monthFilter === 'all' ? `All ${allDates.length} days` : `All of ${monthLabel}`)
+      : `${monthLabel} · ${HALF_LABEL[halfFilter]}`;
 
   const scopeRecords = useMemo(() => {
     const dateSet = new Set(scopeDates);
     return teamFiltered.filter((r) => dateSet.has(r.date));
   }, [teamFiltered, scopeDates]);
 
-  const trendData = useMemo(() => WEEKS.map((w) => {
-    const recs = teamFiltered.filter((r) => w.dates.includes(r.date) && dayStatus(r) !== 'holiday');
+  // Day-by-day attendance trend across the current scope.
+  const trendData = useMemo(() => scopeDates.map((d) => {
+    const recs = teamFiltered.filter((r) => r.date === d && dayStatus(r) !== 'holiday');
     const present = recs.filter((r) => r.present).length;
     const unauthorized = recs.filter((r) => dayStatus(r) === 'unauthorized').length;
     const rate = recs.length ? Math.round((present / recs.length) * 1000) / 10 : 0;
     const unauthRate = recs.length ? Math.round((unauthorized / recs.length) * 1000) / 10 : 0;
-    return { label: w.label, rate, unauthRate };
-  }), [teamFiltered, WEEKS]);
+    return { label: shortDate(d), rate, unauthRate };
+  }), [teamFiltered, scopeDates]);
 
-  const chartData = useMemo(() => {
-    const bucket = isAggregate ? visibleWeeks : scopeDates.map((d) => ({ dates: [d], label: dayLabel(d) }));
-    return bucket.map((b) => {
-      const recs = scopeRecords.filter((r) => b.dates.includes(r.date));
-      const present = recs.filter((r) => dayStatus(r) === 'present').length;
-      const holiday = recs.filter((r) => dayStatus(r) === 'holiday').length;
-      const onLeave = recs.filter((r) => dayStatus(r) === 'onLeave').length;
-      const unauthorized = recs.filter((r) => dayStatus(r) === 'unauthorized').length;
-      return { label: b.label, present, holiday, onLeave, unauthorized, total: recs.length };
-    });
-  }, [scopeRecords, isAggregate, scopeDates, visibleWeeks]);
+  const chartData = useMemo(() => scopeDates.map((d) => {
+    const recs = scopeRecords.filter((r) => r.date === d);
+    const present = recs.filter((r) => dayStatus(r) === 'present').length;
+    const holiday = recs.filter((r) => dayStatus(r) === 'holiday').length;
+    const onLeave = recs.filter((r) => dayStatus(r) === 'onLeave').length;
+    const unauthorized = recs.filter((r) => dayStatus(r) === 'unauthorized').length;
+    return { label: isSingleDay ? shortDate(d) : dayLabel(d), present, holiday, onLeave, unauthorized, total: recs.length };
+  }), [scopeRecords, scopeDates, isSingleDay]);
 
   const employeeStats = useMemo(() => {
     const byId = {};
@@ -296,6 +306,39 @@ export default function AttendanceDashboard({ records }) {
     return rows;
   }, [query, sortKey, sortDir, employeeStats]);
 
+  // --- Sync-check derived data (DB truth vs what this page loaded) --------
+  // Daily headcount is NOT uniform across months (roster grew ~113 in Jan to
+  // ~132 in Aug), so "expected" is the median day, not the max. Only days
+  // under half the median, zero-row dates, or missing weekdays fail the check.
+  const syncInfo = useMemo(() => {
+    const dbRows = coverage?.attendance_rows ?? null;
+    const loadedRows = records.length;
+    const perDate = coverage?.per_date ?? [];
+    const counts = perDate.map((d) => d.count).sort((a, b) => a - b);
+    const typical = counts.length ? counts[Math.floor(counts.length / 2)] : 0;
+    const shortDates = perDate.filter((d) => d.count < typical * 0.5);
+    const zeroDates = perDate.filter((d) => d.count === 0);
+    // Weekdays inside the DB date range with zero rows = genuinely missing.
+    const have = new Set(perDate.map((d) => d.date));
+    const missingWeekdays = [];
+    if (coverage?.date_min && coverage?.date_max) {
+      const cur = parseDate(coverage.date_min);
+      const end = parseDate(coverage.date_max);
+      while (cur <= end) {
+        const iso = cur.toISOString().slice(0, 10);
+        const dow = cur.getDay();
+        if (dow !== 0 && dow !== 6 && !have.has(iso)) missingWeekdays.push(iso);
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
+    const complete = dbRows !== null
+      && loadedRows === dbRows
+      && shortDates.length === 0
+      && zeroDates.length === 0
+      && missingWeekdays.length === 0;
+    return { dbRows, loadedRows, perDate, typical, shortDates, zeroDates, missingWeekdays, complete };
+  }, [coverage, records]);
+
   function toggleSort(key) {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     else { setSortKey(key); setSortDir('desc'); }
@@ -350,24 +393,39 @@ export default function AttendanceDashboard({ records }) {
           ))}
         </div>
 
-        {/* Shared filters */}
+        {tab !== 'Sync check' && (
         <section style={{ marginBottom: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {visibleWeeks.map((w) => {
-                const idx = WEEKS.indexOf(w);
-                return (
-                  <button key={w.start} onClick={() => setWeekIdx(idx)} style={{ fontFamily: 'inherit', fontSize: 12.5, padding: '7px 14px', cursor: 'pointer', border: `1px solid ${idx === weekIdx ? colors.ink : colors.line}`, background: idx === weekIdx ? colors.ink : colors.panel, color: idx === weekIdx ? colors.paper : colors.ink, borderRadius: 20 }}>{w.label}</button>
-                );
-              })}
-              <button onClick={() => setWeekIdx(-1)} style={{ fontFamily: 'inherit', fontSize: 12.5, padding: '7px 14px', cursor: 'pointer', fontWeight: 600, border: `1px solid ${isAggregate ? colors.good : colors.line}`, background: isAggregate ? 'rgba(58,107,82,0.1)' : colors.panel, color: isAggregate ? colors.good : colors.ink, borderRadius: 20 }}>{monthFilter === 'All months' ? `All ${WEEKS.length} weeks` : `All of ${monthFilter}`}</button>
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <select value={monthFilter} onChange={(e) => handleMonthChange(e.target.value)} style={selectStyle}><option>All months</option>{MONTHS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}</select>
-              <select value={shiftFilter} onChange={(e) => setShiftFilter(e.target.value)} style={selectStyle} title="Filter by shift (view only until Zoho provides assignment)">
-                <option value="all">All shifts</option><option value="day">Day</option><option value="night">Night</option><option value="hybrid">Hybrid</option>
-              </select>
-            </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: colors.panel, border: `1px solid ${colors.line}`, borderRadius: 4, padding: '8px 10px', marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: colors.muted, fontWeight: 600, marginRight: 4 }}>Month:</span>
+            <select value={monthFilter} onChange={(e) => handleMonthChange(e.target.value)} style={selectStyle}>
+              <option value="all">All months ({allDates.length} days)</option>
+              {MONTHS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
+            <span style={{ fontSize: 12, color: colors.muted, fontWeight: 600, marginLeft: 8 }}>Bi-weekly:</span>
+            {['all', 'H1', 'H2'].map((h) => (
+              <button
+                key={h}
+                onClick={() => handleHalfChange(h)}
+                style={{
+                  fontFamily: 'inherit', fontSize: 12.5, padding: '7px 14px', cursor: 'pointer',
+                  border: `1px solid ${halfFilter === h ? colors.ink : colors.line}`,
+                  background: halfFilter === h ? colors.ink : colors.panel,
+                  color: halfFilter === h ? colors.paper : colors.ink, borderRadius: 20,
+                }}
+              >
+                {h === 'all' ? 'Whole month' : `${h} (${HALF_LABEL[h]})`}
+              </button>
+            ))}
+            <span style={{ fontSize: 12, color: colors.muted, fontWeight: 600, marginLeft: 8 }}>Day:</span>
+            <select value={dayFilter} onChange={(e) => setDayFilter(e.target.value)} style={{ ...selectStyle, maxWidth: 220 }}>
+              <option value="all">All {visibleDates.length} days in view</option>
+              {visibleDates.map((d) => (
+                <option key={d} value={d}>{dayLabel(d)} {shortDate(d)}{isWeekend(d) ? ' (weekend)' : ''}</option>
+              ))}
+            </select>
+            <select value={shiftFilter} onChange={(e) => setShiftFilter(e.target.value)} style={{ ...selectStyle, marginLeft: 'auto' }} title="Filter by shift (view only until Zoho provides assignment)">
+              <option value="all">All shifts</option><option value="day">Day</option><option value="night">Night</option><option value="hybrid">Hybrid</option>
+            </select>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', background: colors.panel, border: `1px solid ${colors.line}`, borderRadius: 4, padding: '8px 10px' }}>
             <span style={{ fontSize: 12, color: colors.muted, fontWeight: 600, marginRight: 4 }}>Teams:</span>
@@ -384,6 +442,7 @@ export default function AttendanceDashboard({ records }) {
             {selectedTeams.length > 0 && <span style={{ fontSize: 12, color: colors.select }}>{selectedTeams.length} of {ALL_TEAMS.length} selected</span>}
           </div>
         </section>
+        )}
 
         {tab === 'Overview' && (
           <>
@@ -402,10 +461,10 @@ export default function AttendanceDashboard({ records }) {
                 </div>
               ))}
             </section>
-            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 32 }}>Figures above reflect: <strong style={{ color: colors.ink }}>{scopeLabel}</strong>{selectedTeams.length > 0 && ` · ${selectedTeams.join(', ')}`}{shiftFilter !== 'all' && ` · ${shiftFilter} shift`}. Public holidays are excluded from the rate calculations.</div>
+            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 32 }}>Figures above reflect: <strong style={{ color: colors.ink }}>{scopeLabel}</strong>{selectedTeams.length > 0 && ` · ${selectedTeams.join(', ')}`}{shiftFilter !== 'all' && ` · ${shiftFilter} shift`}. Public holidays are excluded from the rate calculations. Weekend dates carry no expected shift and are excluded from rates.</div>
 
             <section style={{ marginBottom: 36 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Attendance rate, week over week {selectedTeams.length > 0 && <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {selectedTeams.join(', ')}</span>}{shiftFilter !== 'all' && <span style={{ color: colors.muted, fontWeight: 400 }}> &middot; {shiftFilter}</span>}</h2>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Attendance rate, day by day {selectedTeams.length > 0 && <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {selectedTeams.join(', ')}</span>}{shiftFilter !== 'all' && <span style={{ color: colors.muted, fontWeight: 400 }}> &middot; {shiftFilter}</span>}</h2>
               <div style={{ background: colors.panel, border: `1px solid ${colors.line}`, borderRadius: 4, padding: '16px 20px 4px' }}>
                 <ResponsiveContainer width="100%" height={200}>
                   <LineChart data={trendData} margin={{ top: 4, right: 16, left: -12, bottom: 4 }}>
@@ -421,7 +480,7 @@ export default function AttendanceDashboard({ records }) {
             </section>
 
             <section>
-              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>{isAggregate ? 'Breakdown by week' : 'Daily breakdown'} <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {scopeLabel}</span></h2>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>{isSingleDay ? 'Single-day breakdown' : 'Daily breakdown'} <span style={{ color: colors.muted, fontWeight: 400 }}>&middot; {scopeLabel}</span></h2>
               <div style={{ background: colors.panel, border: `1px solid ${colors.line}`, borderRadius: 4, padding: '16px 20px 4px' }}>
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={chartData} margin={{ top: 4, right: 8, left: -12, bottom: 4 }}>
@@ -492,9 +551,10 @@ export default function AttendanceDashboard({ records }) {
                     <tbody>
                       {scopeDates.map((date, i) => {
                         const rec = weekdayRecordsAll.find((r) => r.employeeId === displayedMatch.id && r.date === date);
+                        const weekend = isWeekend(date);
                         const status = rec ? dayStatus(rec) : 'unauthorized';
-                        const c = STATUS_COLOR[status];
-                        const label = rec ? (rec.isHoliday ? rec.holidayName : (leaveLabel(rec) || STATUS_LABEL[status])) : 'No record';
+                        const c = weekend && !rec ? colors.muted : STATUS_COLOR[status];
+                        const label = rec ? (rec.isHoliday ? rec.holidayName : (leaveLabel(rec) || STATUS_LABEL[status])) : (weekend ? 'Weekend' : 'No record');
                         return (
                           <tr key={date} style={{ borderTop: `1px solid ${colors.line}`, background: i % 2 ? 'rgba(0,0,0,0.015)' : 'transparent' }}>
                             <td style={{ ...td, fontWeight: 500 }}>{dayLabel(date)}</td>
@@ -505,9 +565,9 @@ export default function AttendanceDashboard({ records }) {
                               {rec?.present && !rec?.wfh && <SourceDot source={rec.source} />}
                               {rec?.shiftAnomaly && <span title="Off-shift attendance flagged for review" style={{ marginLeft: 6, color: colors.anomaly, fontSize: 11 }}>&#9888;</span>}
                             </td>
-                            <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec?.checkIn || '\u2014'}</td>
-                            <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec?.checkOut || '\u2014'}</td>
-                            <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec?.hours ? rec.hours.toFixed(1) : '\u2014'}</td>
+                            <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec?.checkIn || '—'}</td>
+                            <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec?.checkOut || '—'}</td>
+                            <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec?.hours ? rec.hours.toFixed(1) : '—'}</td>
                           </tr>
                         );
                       })}
@@ -522,7 +582,7 @@ export default function AttendanceDashboard({ records }) {
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead><tr style={{ position: 'sticky', top: 0, background: colors.panel, boxShadow: `0 1px 0 ${colors.line}` }}>
                     {[['name', 'Name'], ['team', 'Team'], ['present', 'Present'], ['onLeave', 'On leave'], ['unauthorized', 'No record'], ['avgHours', 'Avg hrs/day'], ['overtime', 'OT hrs'], ['anomalyDays', 'Off-shift']].map(([key, label]) => (
-                      <th key={key} onClick={() => toggleSort(key)} style={{ ...(key === 'name' || key === 'team' ? th : thR), cursor: 'pointer', userSelect: 'none' }}>{label}{sortKey === key ? (sortDir === 'asc' ? ' \u2191' : ' \u2193') : ''}</th>
+                      <th key={key} onClick={() => toggleSort(key)} style={{ ...(key === 'name' || key === 'team' ? th : thR), cursor: 'pointer', userSelect: 'none' }}>{label}{sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}</th>
                     ))}
                   </tr></thead>
                   <tbody>
@@ -533,11 +593,11 @@ export default function AttendanceDashboard({ records }) {
                           <td style={{ ...td, fontWeight: isSelected ? 700 : 500, color: isSelected ? colors.select : colors.ink }}>{e.name}<span style={{ color: colors.muted, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, marginLeft: 8, fontWeight: 400 }}>{e.id}</span></td>
                           <td style={{ ...td, fontSize: 12.5 }}>{e.team}</td>
                           <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{e.present} / {scopeDates.length}</td>
-                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace", color: colors.warn }}>{e.onLeave || '\u2014'}</td>
-                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace", color: e.unauthorized >= 3 ? colors.alert : colors.ink }}>{e.unauthorized || '\u2014'}</td>
-                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{e.avgHours || '\u2014'}</td>
-                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{e.overtime ? e.overtime.toFixed(1) : '\u2014'}</td>
-                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace", color: e.anomalyDays > 0 ? colors.anomaly : colors.ink }}>{e.anomalyDays || '\u2014'}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace", color: colors.warn }}>{e.onLeave || '—'}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace", color: e.unauthorized >= 3 ? colors.alert : colors.ink }}>{e.unauthorized || '—'}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{e.avgHours || '—'}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{e.overtime ? e.overtime.toFixed(1) : '—'}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace", color: e.anomalyDays > 0 ? colors.anomaly : colors.ink }}>{e.anomalyDays || '—'}</td>
                         </tr>
                       );
                     })}
@@ -630,6 +690,156 @@ export default function AttendanceDashboard({ records }) {
                       </tr>
                     ))}
                     {leaveRecords.length === 0 && (<tr><td colSpan={4} style={{ padding: '24px 16px', textAlign: 'center', color: colors.muted }}>No leave recorded in this view.</td></tr>)}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </>
+        )}
+
+        {tab === 'Sync check' && (
+          <>
+            <section style={{ marginBottom: 24 }}>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Did everything sync?</h2>
+              {!coverage && (
+                <div style={{ border: `1px solid ${colors.warn}`, borderRadius: 4, background: '#FDF6E3', padding: '14px 16px', fontSize: 13 }}>
+                  Coverage endpoint unavailable — showing frontend-loaded rows only. Check that the API restarted after the update.
+                </div>
+              )}
+              {coverage && (
+                <div style={{
+                  border: `1px solid ${syncInfo.complete ? colors.good : colors.alert}`,
+                  borderRadius: 4, overflow: 'hidden', background: colors.panel,
+                }}>
+                  <div style={{
+                    padding: '14px 16px', fontWeight: 600, fontSize: 14,
+                    background: syncInfo.complete ? 'rgba(58,107,82,0.1)' : 'rgba(166,61,47,0.08)',
+                    color: syncInfo.complete ? colors.good : colors.alert,
+                    borderBottom: `1px solid ${colors.line}`,
+                  }}>
+                    {syncInfo.complete
+                      ? `Complete — all ${syncInfo.dbRows} DB rows loaded, no thin or missing dates, no missing weekdays.`
+                      : 'Incomplete — see the gaps below.'}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+                    {[
+                      { label: 'Rows in DB (attendance_records)', value: syncInfo.dbRows },
+                      { label: 'Rows loaded by this page', value: syncInfo.loadedRows },
+                      { label: 'DB date range', value: coverage.date_min && coverage.date_max ? `${coverage.date_min} → ${coverage.date_max}` : '—' },
+                      { label: 'Employees / Teams', value: `${coverage.employees} / ${coverage.teams}` },
+                      { label: 'Leave rows / Holidays / WFH', value: `${coverage.leave_rows} / ${coverage.holidays} / ${coverage.wfh_rows}` },
+                      { label: `Typical rows per day (median)`, value: syncInfo.typical || '—' },
+                    ].map((s, i) => (
+                      <div key={i} style={{ flex: '1 1 200px', padding: '14px 16px', borderRight: `1px solid ${colors.line}` }}>
+                        <div style={{ fontSize: 12, color: colors.muted, marginBottom: 6 }}>{s.label}</div>
+                        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 18, fontWeight: 500 }}>{s.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {(syncInfo.shortDates.length > 0 || syncInfo.zeroDates.length > 0 || syncInfo.missingWeekdays.length > 0 || syncInfo.loadedRows !== syncInfo.dbRows) && (
+                    <div style={{ padding: '12px 16px', fontSize: 13, borderTop: `1px solid ${colors.line}`, color: colors.alert }}>
+                      {syncInfo.loadedRows !== syncInfo.dbRows && (
+                        <div>Page loaded {syncInfo.loadedRows} of {syncInfo.dbRows} DB rows — pagination is falling behind.</div>
+                      )}
+                      {syncInfo.shortDates.map((d) => (
+                        <div key={d.date}>{d.date} has only {d.count} rows (typical day: {syncInfo.typical}).</div>
+                      ))}
+                      {syncInfo.zeroDates.map((d) => (
+                        <div key={d.date}>{d.date} has zero rows in the DB.</div>
+                      ))}
+                      {syncInfo.missingWeekdays.map((d) => (
+                        <div key={d}>{d} is a weekday with zero rows in the DB — that day never synced.</div>
+                      ))}
+                    </div>
+                  )}
+                  {syncInfo.complete && (
+                    <div style={{ padding: '12px 16px', fontSize: 12.5, borderTop: `1px solid ${colors.line}`, color: colors.muted }}>
+                      Daily headcount varies because the roster grew over the months (about 113 staff/day in January, 132 by August) — that is real history, not missing data.
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+
+            <section style={{ marginBottom: 24 }}>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 4px' }}>Per-date coverage</h2>
+              <div style={{ fontSize: 13, color: colors.muted, marginBottom: 14 }}>
+                One chip per date in the DB. Green = typical day or fuller. Amber = below half the typical day. Red = zero rows. Dashed = weekend (no shift expected, shown for completeness).
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', background: colors.panel, border: `1px solid ${colors.line}`, borderRadius: 4, padding: 14 }}>
+                {(coverage?.per_date ?? allDates.map((d) => ({ date: d, count: records.filter((r) => r.date === d).length }))).map((d) => {
+                  const weekend = isWeekend(d.date);
+                  const thin = syncInfo.typical > 0 && d.count < syncInfo.typical * 0.5;
+                  const empty = d.count === 0;
+                  const c = empty ? colors.alert : thin ? colors.warn : colors.good;
+                  return (
+                    <div
+                      key={d.date}
+                      title={`${d.date} — ${d.count} rows${syncInfo.typical ? ` (typical day: ${syncInfo.typical})` : ''}`}
+                      style={{
+                        padding: '6px 10px', borderRadius: 20, fontSize: 12,
+                        fontFamily: "'IBM Plex Mono', monospace",
+                        background: weekend && !thin && !empty ? colors.paper : `${c}1F`,
+                        color: weekend && !thin && !empty ? colors.muted : c,
+                        border: weekend && !thin && !empty ? `1px dashed ${colors.line}` : `1px solid ${c}4D`,
+                        fontWeight: 600, cursor: 'pointer',
+                      }}
+                      onClick={() => {
+                        const mk = monthKey(d.date);
+                        setMonthFilter(mk); setHalfFilter(halfOf(d.date)); setDayFilter(d.date); setTab('Overview');
+                      }}
+                    >
+                      {shortDate(d.date)} · {d.count}
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 12, color: colors.muted, marginTop: 10 }}>Click a chip to jump to that day in the Overview tab.</div>
+            </section>
+
+            <section style={{ marginBottom: 24 }}>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Per-month totals (DB)</h2>
+              <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, overflow: 'hidden', background: colors.panel }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead><tr><th style={th}>Month</th><th style={thR}>Rows</th><th style={thR}>Dates</th></tr></thead>
+                  <tbody>
+                    {(coverage?.per_month ?? []).map((m, i) => {
+                      const dates = (coverage?.per_date ?? []).filter((d) => d.date.slice(0, 7) === m.month).length;
+                      return (
+                        <tr key={m.month} style={{ borderTop: `1px solid ${colors.line}`, background: i % 2 ? 'rgba(0,0,0,0.015)' : 'transparent' }}>
+                          <td style={{ ...td, fontWeight: 500 }}>{m.month}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{m.count}</td>
+                          <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{dates}</td>
+                        </tr>
+                      );
+                    })}
+                    {(!coverage || (coverage.per_month ?? []).length === 0) && (
+                      <tr><td colSpan={3} style={{ padding: '24px 16px', textAlign: 'center', color: colors.muted }}>No coverage data — is the API reachable?</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section>
+              <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Sync log (latest runs)</h2>
+              <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, overflow: 'hidden', background: colors.panel }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead><tr><th style={th}>Source</th><th style={th}>Ran at</th><th style={thR}>Processed</th><th style={thR}>Failed</th><th style={th}>Status</th><th style={th}>Notes</th></tr></thead>
+                  <tbody>
+                    {(coverage?.sync_log ?? []).map((s, i) => (
+                      <tr key={s.id} style={{ borderTop: `1px solid ${colors.line}`, background: i % 2 ? 'rgba(0,0,0,0.015)' : 'transparent' }}>
+                        <td style={{ ...td, fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 }}>{s.source}</td>
+                        <td style={{ ...td, color: colors.muted, fontSize: 12.5 }}>{s.run_at}</td>
+                        <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{s.records_processed}</td>
+                        <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace", color: s.records_failed > 0 ? colors.alert : colors.ink }}>{s.records_failed}</td>
+                        <td style={{ ...td, color: s.status === 'complete' ? colors.good : colors.alert, fontWeight: 500 }}>{s.status}</td>
+                        <td style={{ ...td, fontSize: 12.5, color: colors.muted }}>{s.notes || '—'}</td>
+                      </tr>
+                    ))}
+                    {(!coverage || (coverage.sync_log ?? []).length === 0) && (
+                      <tr><td colSpan={6} style={{ padding: '24px 16px', textAlign: 'center', color: colors.muted }}>No sync runs recorded.</td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
