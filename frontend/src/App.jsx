@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Link, Navigate, useNavigate } from 'react-router-dom';
-import AttendanceDashboard from './AttendanceDashboard.jsx';
+import Dashboard from './Dashboard.jsx';
 import AuthHeader from './components/AuthHeader.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import ChangePasswordPage from './pages/ChangePasswordPage.jsx';
 import UsersPage from './pages/UsersPage.jsx';
-import { fetchDayRecords, fetchCoverage } from './api.js';
+import { fetchDayRecords, fetchCoverage, fetchEmployees, fetchTeams } from './api.js';
 import { bootSession, getCurrentUser, subscribe, clearSession } from './auth.js';
 import logoUrl from './assets/tbl-logo.svg';
 import { colors } from './theme.js';
@@ -24,6 +24,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [records, setRecords] = useState(null);
   const [coverage, setCoverage] = useState(null);
+  const [roster, setRoster] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -58,10 +59,19 @@ export default function App() {
     async function load() {
       try {
         setLoading(true);
-        const [recs, cov] = await Promise.all([fetchDayRecords(), fetchCoverage().catch(() => null)]);
+        const [recs, cov, emps, teams] = await Promise.all([
+          fetchDayRecords(),
+          fetchCoverage().catch(() => null),
+          fetchEmployees().catch(() => []),
+          fetchTeams().catch(() => []),
+        ]);
+        const teamById = new Map((teams || []).map((t) => [t.id, t.name]));
         if (!cancelled) {
           setRecords(recs);
           setCoverage(cov);
+          setRoster((emps || []).map((e) => ({
+            id: e.id, name: e.name, team: teamById.get(e.current_team_id) || 'Unassigned',
+          })));
           setError(null);
         }
       } catch (e) {
@@ -79,6 +89,7 @@ export default function App() {
     setUser(null);
     setRecords(null);
     setCoverage(null);
+    setRoster([]);
   }
 
   if (booting) {
@@ -128,7 +139,7 @@ export default function App() {
             </span>
           </div>
         ) : (
-          <AttendanceDashboard records={records || []} coverage={coverage} />
+          <Dashboard records={records || []} coverage={coverage} roster={roster} user={user} onLogout={handleLogout} />
         )
       } />
     </Routes>

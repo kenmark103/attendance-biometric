@@ -42,6 +42,7 @@ export const fetchAttendance = (params) => getJSON('/attendance', params);
 export const fetchLeave = (params) => getJSON('/leave', params);
 export const fetchHolidays = (params) => getJSON('/holidays', params);
 export const fetchWfh = (params) => getJSON('/wfh', params);
+export const fetchEmployees = () => getJSON('/employees');
 export const fetchCoverage = () => getJSON('/stats/coverage');
 export const fetchSyncLog = (limit = 50) => getJSON('/sync-log', { limit });
 export const createWfh = (payload) => postJSON('/wfh', payload);
