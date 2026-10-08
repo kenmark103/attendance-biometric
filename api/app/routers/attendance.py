@@ -189,6 +189,11 @@ def stats_coverage(user=Depends(viewer)):
     cur.execute("SELECT COUNT(*) AS n FROM wfh_approvals")
     n_wfh = cur.fetchone()["n"]
     cur.execute(
+        "SELECT to_char(date, 'YYYY-MM') AS month FROM leave_records "
+        "GROUP BY 1 HAVING COUNT(*) > 0 ORDER BY 1"
+    )
+    leave_by_month = [r["month"] for r in cur.fetchall()]
+    cur.execute(
         "SELECT id, source, run_at, records_processed, records_failed, status, notes "
         "FROM sync_log ORDER BY id DESC LIMIT 20"
     )
@@ -204,6 +209,7 @@ def stats_coverage(user=Depends(viewer)):
         "employees": n_employees,
         "teams": n_teams,
         "leave_rows": n_leave,
+        "leave_by_month": leave_by_month,
         "holidays": n_holidays,
         "wfh_rows": n_wfh,
         "sync_log": [
