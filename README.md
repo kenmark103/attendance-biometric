@@ -108,6 +108,12 @@ auth/              security (argon2id, JWT, refresh hashing),
 routers/           schemas (pydantic), attendance (teams/employees/records,
                    leave/holidays/coverage/sync-log/bulk), wfh (approvals)
 ingestion/         COSEC biometric sync worker (polls device -> staging)
+scripts/promote_cosec_to_attendance.sql
+                   one-off promotion staging -> attendance_records
+                   (insert-only-new; existing rows never touched)
+scripts/promote_loop.py + `promoter` service
+                   reruns the promotion every PROMOTE_INTERVAL_SECONDS
+                   (default 300) so the dashboard tracks each poll near-live
 ```
 
 Tests: `docker compose exec api pytest tests/ -v` (auth + ingestion, needs

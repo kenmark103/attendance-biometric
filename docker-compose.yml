@@ -93,6 +93,22 @@ services:
       - ./data:/data
     restart: unless-stopped
 
+  # Promoter: keeps the dashboard near-live by moving freshly polled COSEC
+  # staging rows into attendance_records every PROMOTE_INTERVAL_SECONDS.
+  # Idempotent (insert-only-new); existing rows are never touched. No ports.
+  promoter:
+    build: ./api
+    command: python /scripts/promote_loop.py
+    environment:
+      DATABASE_URL: postgresql://attendance:attendance@db:5432/attendance
+      PROMOTE_INTERVAL_SECONDS: ${PROMOTE_INTERVAL_SECONDS:-300}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts
+    restart: unless-stopped
+
   # One-off, not started by `docker compose up`. Run explicitly:
   #   docker compose --profile tools run --rm loader
   # No host pip install needed — psycopg2 already lives in this image.
