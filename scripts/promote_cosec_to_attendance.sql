@@ -1,8 +1,12 @@
 -- Promote COSEC staging rows into the dashboard tables.
 --
--- Repeatable: every INSERT uses ON CONFLICT DO NOTHING, so re-running only
--- fills gaps. Rows already in attendance_records (e.g. the 4,356 migrated
--- file rows) are NEVER overwritten — file semantics win on overlap.
+-- Repeatable: INSERTs never overwrite existing rows, and UPDATEs only touch
+-- rows that came from a previous promotion (source = 'biometric'). Migrated
+-- file rows (source = 'migrated') are NEVER modified — file semantics win.
+--
+-- Why updates matter: the device revises a day's punches as people badge in
+-- and out, and each poll upserts staging. Without propagation the dashboard
+-- would freeze at first-seen values (e.g. missing evening check-outs).
 --
 -- Mapping (each rule validated against the Aug/Sep overlap before writing):
 --   present   = punch1 OR punch2 present (100% agreement incl. 8 file-present
@@ -13,6 +17,10 @@
 --   shift     = left NULL: device working_shift codes ('09','27','AL',...)
 --               don't map to shift_templates; nothing honest to put there.
 -- Only in_scope users (engineering roster) are promoted.
+--
+-- Device re-pull for any range (resync): python -m app.ingestion.cli
+-- backfill --from YYYY-MM-DD --to YYYY-MM-DD, then re-run this script
+-- (or wait for the promoter loop) to carry the revisions through.
 --
 -- Run: psql $DATABASE_URL -f scripts/promote_cosec_to_attendance.sql
 
@@ -35,7 +43,9 @@ BEGIN
     WHERE u.in_scope
     ON CONFLICT (id) DO NOTHING;
 
-    -- 3. Attendance rows: only (employee, date) pairs not already present.
+    -- 3. Attendance rows: insert new pairs; refresh rows from previous
+    -- promotions when the device revised the day (late check-outs etc.).
+    -- Migrated file rows are excluded from updates by the WHERE clause.
     INSERT INTO attendance_records
         (employee_id, date, check_in, check_out, work_hours, overtime_hours,
          late_in, early_out, present, team_id, source, raw_ref)
@@ -56,7 +66,17 @@ BEGIN
     JOIN cosec_users u ON u.user_id = c.user_id
     LEFT JOIN teams t ON t.name = trim(u.team)
     WHERE u.in_scope
-    ON CONFLICT (employee_id, date) DO NOTHING;
+    ON CONFLICT (employee_id, date) DO UPDATE SET
+        check_in = EXCLUDED.check_in,
+        check_out = EXCLUDED.check_out,
+        work_hours = EXCLUDED.work_hours,
+        overtime_hours = EXCLUDED.overtime_hours,
+        late_in = EXCLUDED.late_in,
+        early_out = EXCLUDED.early_out,
+        present = EXCLUDED.present,
+        team_id = EXCLUDED.team_id,
+        raw_ref = EXCLUDED.raw_ref
+    WHERE attendance_records.source = 'biometric';
     GET DIAGNOSTICS inserted_attendance = ROW_COUNT;
 
     -- 4. Keep employees.current_team_id in sync (same statement as POST /attendance/bulk).
@@ -68,11 +88,11 @@ BEGIN
     ) AS latest
     WHERE e.id = latest.employee_id AND latest.team_id IS NOT NULL;
 
-    -- 5. Audit trail for the Sync-check tab (actual inserted count, not a constant).
+    -- 5. Audit trail for the Sync-check tab (actual affected count, not a constant).
     INSERT INTO sync_log (source, records_processed, records_failed, status, notes)
     VALUES ('cosec_promotion', inserted_attendance, 0, 'complete',
-            'promoted in_scope staging rows missing from attendance_records; existing rows untouched');
+            'upserted in_scope staging rows (insert-only-new; updates limited to biometric-sourced rows)');
 
-    RAISE NOTICE 'promoted % new attendance rows', inserted_attendance;
+    RAISE NOTICE 'promoted % new/updated attendance rows', inserted_attendance;
 END
 $$;

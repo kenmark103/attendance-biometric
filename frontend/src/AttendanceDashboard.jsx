@@ -140,6 +140,24 @@ function SourceDot({ source }) {
 
 const TABS = ['Overview', 'Teams', 'Employees', 'Anomalies & Leave', 'Sync check'];
 
+// Overview opens on the current month + current bi-weekly half so the first
+// thing seen is "now", not a 10-month aggregate. Falls back to the latest
+// month with data when the current month isn't in the dataset yet.
+function defaultMonthKey(MONTHS) {
+  if (!MONTHS.length) return 'all';
+  const now = new Date();
+  const key = `${now.getFullYear()}-${now.getMonth()}`;
+  if (MONTHS.some((m) => m.key === key)) return key;
+  return MONTHS[MONTHS.length - 1].key;
+}
+function defaultHalf(monthKey) {
+  const now = new Date();
+  if (monthKey !== 'all' && monthKey === `${now.getFullYear()}-${now.getMonth()}`) {
+    return now.getDate() <= 15 ? 'H1' : 'H2';
+  }
+  return 'all';
+}
+
 export default function AttendanceDashboard({ records, coverage }) {
   const { allDates, weekdayRecordsAll, MONTHS, ALL_TEAMS } = useMemo(() => computeDerived(records), [records]);
 
@@ -147,8 +165,8 @@ export default function AttendanceDashboard({ records, coverage }) {
   const [selectedTeams, setSelectedTeams] = useState([]); // empty = all teams
   const [shiftFilter, setShiftFilter] = useState('all'); // all|day|night|hybrid
   // Period navigation: month -> bi-weekly half (1-15 / 16-end) -> single day.
-  const [monthFilter, setMonthFilter] = useState('all');
-  const [halfFilter, setHalfFilter] = useState('all'); // all|H1|H2
+  const [monthFilter, setMonthFilter] = useState(() => defaultMonthKey(MONTHS));
+  const [halfFilter, setHalfFilter] = useState(() => defaultHalf(defaultMonthKey(MONTHS)));
   const [dayFilter, setDayFilter] = useState('all'); // all|<date>
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState('unauthorized');
