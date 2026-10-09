@@ -6,7 +6,7 @@ import requests
 import app.ingestion.service as service
 from app.ingestion.config import Settings
 from app.ingestion.cosec_client import CosecAuthError, build_url, fetch_range
-from app.ingestion.service import backfill_months, chunk_ranges, month_ranges, poll_window
+from app.ingestion.service import backfill_months, chunk_ranges, month_ranges, poll_range, poll_window
 
 
 def _settings(**kw) -> Settings:
@@ -190,3 +190,21 @@ def test_backfill_lock_never_released():
          patch.object(service.time, "sleep"):
         assert backfill_months(None, _settings(), date(2026, 1, 1), date(2026, 1, 31)) == date(2026, 1, 1)
         assert service.ingest_range.call_count == service.LOCK_WAIT_TRIES
+
+
+def test_poll_range_no_history_uses_lookback():
+    assert poll_range(_settings(), date(2026, 10, 9), None) == (date(2026, 10, 6), date(2026, 10, 9))
+
+
+def test_poll_range_recent_history_unchanged():
+    assert poll_range(_settings(), date(2026, 10, 9), date(2026, 10, 8)) == (date(2026, 10, 6), date(2026, 10, 9))
+
+
+def test_poll_range_outage_extends_to_day_after_last_success():
+    assert poll_range(_settings(), date(2026, 10, 9), date(2026, 10, 2)) == (date(2026, 10, 3), date(2026, 10, 9))
+
+
+def test_poll_range_long_outage_caps_at_device_limit():
+    a, b = poll_range(_settings(), date(2026, 10, 9), date(2026, 7, 1))
+    assert b == date(2026, 10, 9)
+    assert (b - a).days + 1 == 31

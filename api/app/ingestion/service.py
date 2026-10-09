@@ -29,6 +29,41 @@ def poll_window(settings: Settings, now: datetime | None = None) -> tuple[date, 
     return (today - timedelta(days=settings.poll_lookback_days), today)
 
 
+def last_success_end(engine) -> date | None:
+    """End of the most recent successfully ingested range (poll or backfill)."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT max(range_to) FROM ingestion_runs"
+                " WHERE status = 'success' AND mode IN ('poll', 'backfill')"
+            )
+        ).first()
+    return row[0] if row and row[0] else None
+
+
+def poll_range(settings: Settings, today: date, prev_end: date | None) -> tuple[date, date]:
+    """Poll window, extended backwards to cover an outage gap.
+
+    After a long stop (PC asleep for days), the plain 3-day lookback would
+    silently skip days. Extending from the day after the last success makes
+    the first poll after a gap self-healing. Capped so one poll never pulls
+    more than COSEC_MAX_RANGE_DAYS; anything older needs a manual backfill.
+    """
+    d_from = today - timedelta(days=settings.poll_lookback_days)
+    d_to = today
+    if prev_end is not None:
+        d_from = min(d_from, prev_end + timedelta(days=1))
+        earliest = d_to - timedelta(days=settings.cosec_max_range_days - 1)
+        if d_from < earliest:
+            log.warning(
+                "outage gap exceeds %sd (last success %s); catching up from %s only,"
+                " run a backfill for the older range",
+                settings.cosec_max_range_days, prev_end, earliest,
+            )
+            d_from = earliest
+    return d_from, d_to
+
+
 @dataclass
 class RunSummary:
     status: str
@@ -85,7 +120,14 @@ def ingest_range(engine, settings: Settings, mode: str, d_from: date, d_to: date
 
 
 def poll_once(engine, settings: Settings) -> RunSummary:
-    d_from, d_to = poll_window(settings)
+    today = datetime.now(TZ).astimezone(TZ).date()
+    prev_end = last_success_end(engine)
+    d_from, d_to = poll_range(settings, today, prev_end)
+    if d_from > d_to:
+        log.info("poll window empty (last success %s is in the future); skipping", prev_end)
+        return RunSummary("skipped", 0, 0, 0, None)
+    if prev_end is not None and d_from < today - timedelta(days=settings.poll_lookback_days):
+        log.info("catch-up poll %s..%s after outage (last success %s)", d_from, d_to, prev_end)
     return ingest_range(engine, settings, "poll", d_from, d_to)
 
 
