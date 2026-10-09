@@ -16,6 +16,7 @@ from app.auth.local import router as local_router
 from app.auth.microsoft import router as microsoft_router
 from app.core import settings
 from app.routers.attendance import router as attendance_router
+from app.routers.ingestion import router as ingestion_router
 from app.routers.wfh import router as wfh_router
 
 
@@ -34,6 +35,7 @@ app.include_router(local_router)
 app.include_router(microsoft_router)
 app.include_router(admin_router)
 app.include_router(attendance_router)
+app.include_router(ingestion_router)
 app.include_router(wfh_router)
 
 

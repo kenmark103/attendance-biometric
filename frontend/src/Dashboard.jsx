@@ -49,7 +49,7 @@ export function scopeCaptionLine(caption, extra) {
   );
 }
 
-export default function Dashboard({ records, coverage, roster, user, onLogout }) {
+export default function Dashboard({ records, coverage, roster, user, onLogout, onSyncNow, syncing, syncMsg }) {
   const today = useMemo(() => todayNairobi(), []);
   const navigate = useNavigate();
   const location = useLocation();
@@ -194,7 +194,8 @@ export default function Dashboard({ records, coverage, roster, user, onLogout })
         </nav>
 
         <FilterBar filters={filters} months={months} teams={teamNames} teamHeadcounts={teamHeadcounts}
-          daysInView={daysInView} today={today} onChange={update} neverPunchedCount={agg.neverPunchedCount} />
+          daysInView={daysInView} today={today} onChange={update} neverPunchedCount={agg.neverPunchedCount}
+          onSyncNow={onSyncNow} syncing={syncing} syncMsg={syncMsg} />
 
         <Routes>
           <Route path="/" element={<Overview scope={scope} />} />

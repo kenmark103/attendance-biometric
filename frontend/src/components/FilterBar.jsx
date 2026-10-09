@@ -18,7 +18,7 @@ function saveGroups(groups) {
   try { localStorage.setItem(GROUP_KEY, JSON.stringify(groups)); } catch { /* private mode */ }
 }
 
-export default function FilterBar({ filters, months, teams, teamHeadcounts, months_, daysInView, today, onChange, neverPunchedCount }) {
+export default function FilterBar({ filters, months, teams, teamHeadcounts, months_, daysInView, today, onChange, neverPunchedCount, onSyncNow, syncing, syncMsg }) {
   const [open, setOpen] = useState(false);
   const [teamQuery, setTeamQuery] = useState('');
   const [groupName, setGroupName] = useState('');
@@ -141,11 +141,26 @@ export default function FilterBar({ filters, months, teams, teamHeadcounts, mont
         </div>
         {showReset && (
           <button onClick={() => onChange({ month: undefined, range: undefined, day: '', shift: 'all', teams: null, nopunch: false }, { reset: true })}
-            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: colors.select, cursor: 'pointer', fontSize: 13 }}>
+            style={{ background: 'none', border: 'none', color: colors.select, cursor: 'pointer', fontSize: 13 }}>
             Reset
           </button>
         )}
+        <button onClick={onSyncNow} disabled={syncing}
+          title="Poll the device and promote revisions immediately instead of waiting for the 5-minute loops"
+          style={{
+            marginLeft: showReset ? 0 : 'auto', fontFamily: 'inherit', fontSize: 12.5, padding: '7px 14px',
+            cursor: syncing ? 'wait' : 'pointer', border: `1px solid ${colors.good}`, borderRadius: 20,
+            background: syncing ? colors.paper : 'rgba(58,107,82,0.1)', color: colors.good, fontWeight: 600,
+            opacity: syncing ? 0.7 : 1, whiteSpace: 'nowrap',
+          }}>
+          {syncing ? 'Syncing…' : 'Sync now'}
+        </button>
       </div>
+      {syncMsg && (
+        <div style={{ fontSize: 12, color: syncMsg.startsWith('Sync failed') ? colors.alert : colors.good, marginTop: 6 }}>
+          {syncMsg}
+        </div>
+      )}
     </div>
   );
 }

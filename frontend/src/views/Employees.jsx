@@ -46,7 +46,13 @@ export default function Employees({ scope }) {
   const cur = Math.min(page, pages - 1);
   const slice = sorted.slice(cur * PAGE, cur * PAGE + PAGE);
 
-  const selected = employeeId ? agg.employees.find((e) => e.id === employeeId) : null;
+  const selected = employeeId
+    ? agg.employees.find((e) => e.id === employeeId)
+    : sorted.length === 1
+      ? sorted[0] // search narrowed to one employee: show details without a click
+      : sorted.length === 0 && punched.length === 1
+        ? punched[0]
+        : null;
   const wide = typeof window !== 'undefined' && window.innerWidth >= 1100;
 
   function toggleSort(key) {
@@ -92,7 +98,7 @@ export default function Employees({ scope }) {
             <>
               <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, overflow: 'hidden', background: colors.panel }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead style={{ position: 'sticky', top: 57, background: colors.panel }}>
+                  <thead style={{ background: colors.panel }}>
                     <tr>
                       {[['name', 'Name'], ['team', 'Team']].map(([k, l]) => (
                         <th key={k} onClick={() => toggleSort(k)} style={{ ...th, cursor: 'pointer' }}>{l}{sortMark(k)}</th>

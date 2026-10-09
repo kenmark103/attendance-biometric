@@ -76,7 +76,18 @@ BEGIN
         present = EXCLUDED.present,
         team_id = EXCLUDED.team_id,
         raw_ref = EXCLUDED.raw_ref
-    WHERE attendance_records.source = 'biometric';
+    WHERE attendance_records.source = 'biometric'
+      -- only genuine revisions count (keeps sync_log honest and avoids
+      -- rewriting tens of thousands of identical rows every 5 minutes)
+      AND (attendance_records.check_in, attendance_records.check_out,
+           attendance_records.work_hours, attendance_records.overtime_hours,
+           attendance_records.late_in, attendance_records.early_out,
+           attendance_records.present, attendance_records.team_id)
+          IS DISTINCT FROM
+          (EXCLUDED.check_in, EXCLUDED.check_out,
+           EXCLUDED.work_hours, EXCLUDED.overtime_hours,
+           EXCLUDED.late_in, EXCLUDED.early_out,
+           EXCLUDED.present, EXCLUDED.team_id);
     GET DIAGNOSTICS inserted_attendance = ROW_COUNT;
 
     -- 4. Keep employees.current_team_id in sync (same statement as POST /attendance/bulk).

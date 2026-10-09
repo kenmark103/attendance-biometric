@@ -5,7 +5,7 @@ import AuthHeader from './components/AuthHeader.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import ChangePasswordPage from './pages/ChangePasswordPage.jsx';
 import UsersPage from './pages/UsersPage.jsx';
-import { fetchDayRecords, fetchCoverage, fetchEmployees, fetchTeams } from './api.js';
+import { fetchDayRecords, fetchCoverage, fetchEmployees, fetchTeams, syncNow } from './api.js';
 import { bootSession, getCurrentUser, subscribe, clearSession } from './auth.js';
 import logoUrl from './assets/tbl-logo.svg';
 import { colors } from './theme.js';
@@ -27,6 +27,9 @@ export default function App() {
   const [roster, setRoster] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -82,7 +85,22 @@ export default function App() {
     }
     load();
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, refreshKey]);
+
+  async function handleSyncNow() {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await syncNow();
+      setRefreshKey((k) => k + 1);
+      const p = res.poll || {};
+      setSyncMsg(`Synced: poll ${p.status || '?'} (${p.written ?? 0} staging rows), ${res.promoted ?? 0} dashboard rows updated.`);
+    } catch (e) {
+      setSyncMsg(`Sync failed: ${e.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   function handleLogout() {
     clearSession();
@@ -139,7 +157,8 @@ export default function App() {
             </span>
           </div>
         ) : (
-          <Dashboard records={records || []} coverage={coverage} roster={roster} user={user} onLogout={handleLogout} />
+          <Dashboard records={records || []} coverage={coverage} roster={roster} user={user} onLogout={handleLogout}
+            onSyncNow={handleSyncNow} syncing={syncing} syncMsg={syncMsg} />
         )
       } />
     </Routes>

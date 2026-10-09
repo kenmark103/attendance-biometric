@@ -47,6 +47,7 @@ export const fetchCoverage = () => getJSON('/stats/coverage');
 export const fetchSyncLog = (limit = 50) => getJSON('/sync-log', { limit });
 export const createWfh = (payload) => postJSON('/wfh', payload);
 export const deleteWfh = (id) => delJSON(`/wfh/${id}`);
+export const syncNow = () => postJSON('/ingestion/sync-now', {});
 
 // --- auth / admin ---
 export const changePassword = (current_password, new_password) =>

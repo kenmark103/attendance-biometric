@@ -40,6 +40,16 @@ services:
       ENTRA_REDIRECT_URI: ${ENTRA_REDIRECT_URI:-http://localhost:8001/auth/microsoft/callback}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@attendance.internal}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      # COSEC passthrough so POST /ingestion/sync-now can poll on demand
+      # (same values the ingestor worker uses).
+      COSEC_BASE_URL: ${COSEC_BASE_URL}
+      COSEC_USER: ${COSEC_USER}
+      COSEC_PASSWORD: ${COSEC_PASSWORD}
+      COSEC_TIMEOUT_SECONDS: ${COSEC_TIMEOUT_SECONDS:-60}
+      COSEC_MAX_RANGE_DAYS: ${COSEC_MAX_RANGE_DAYS:-31}
+      POLL_LOOKBACK_DAYS: ${POLL_LOOKBACK_DAYS:-3}
+      MAX_PLAUSIBLE_SPAN_MIN: ${MAX_PLAUSIBLE_SPAN_MIN:-960}
+      MAX_MALFORMED_RATIO: ${MAX_MALFORMED_RATIO:-0.05}
     ports:
       - "8001:8000"
     depends_on:
@@ -106,7 +116,9 @@ services:
       db:
         condition: service_healthy
     volumes:
+      - ./api/app:/app/app
       - ./scripts:/scripts
+      - ./data:/data
     restart: unless-stopped
 
   # One-off, not started by `docker compose up`. Run explicitly:
