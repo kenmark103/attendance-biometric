@@ -198,6 +198,16 @@ def stats_coverage(user=Depends(viewer)):
         "FROM sync_log ORDER BY id DESC LIMIT 20"
     )
     sync_log = cur.fetchall()
+    cur.execute("SELECT service, state, since, last_error, updated_at FROM sync_state")
+    sync_state = {
+        r["service"]: {
+            "state": r["state"],
+            "since": str(r["since"]),
+            "last_error": r["last_error"],
+            "updated_at": str(r["updated_at"]),
+        }
+        for r in cur.fetchall()
+    }
     cur.close()
     conn.close()
     return {
@@ -210,6 +220,7 @@ def stats_coverage(user=Depends(viewer)):
         "teams": n_teams,
         "leave_rows": n_leave,
         "leave_by_month": leave_by_month,
+        "sync_state": sync_state,
         "holidays": n_holidays,
         "wfh_rows": n_wfh,
         "sync_log": [

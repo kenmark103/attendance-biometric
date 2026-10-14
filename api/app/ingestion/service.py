@@ -1,9 +1,11 @@
 import calendar
 import logging
 import signal
+import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from urllib.parse import urlparse
 
 from sqlalchemy import text
 
@@ -12,6 +14,14 @@ from .cosec_client import fetch_range
 from .parser import PayloadError, parse_payload
 from .quality import classify
 from .repository import finish_run, start_run, write_chunk
+from .supervisor import (
+    AuthError,
+    NetworkError,
+    ServerError,
+    SupervisorConfig,
+    SyncState,
+    run_forever,
+)
 
 log = logging.getLogger(__name__)
 
@@ -131,35 +141,101 @@ def poll_once(engine, settings: Settings) -> RunSummary:
     return ingest_range(engine, settings, "poll", d_from, d_to)
 
 
-_stop = False
+def device_host_port(settings: Settings) -> tuple[str, int]:
+    """Host/port for the cheap TCP probe. Unparsable URL -> probe disabled."""
+    try:
+        u = urlparse(settings.cosec_base_url)
+        if not u.hostname:
+            return "", 80
+        return u.hostname, u.port or (443 if u.scheme == "https" else 80)
+    except Exception:
+        return "", 80
 
 
-def _handle_stop(signum, frame):
-    global _stop
-    _stop = True
+def _run_error(engine, run_id: int | None) -> str:
+    if run_id is None:
+        return "poll failed"
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT error FROM ingestion_runs WHERE id = :id"), {"id": run_id}
+        ).first()
+    return (row[0] if row and row[0] else None) or "poll failed"
+
+
+def _classify_error(err_text: str) -> Exception:
+    # ingestion_runs.error is formatted as f"{type(exc).__name__}: {exc}",
+    # so these prefixes are exact, not heuristics over free text.
+    if "CosecAuthError" in err_text:
+        return AuthError(err_text)
+    if "CosecHttpError: HTTP 5" in err_text:
+        return ServerError(err_text)
+    if "CosecError" in err_text or "ConnectionError" in err_text or "Timeout" in err_text:
+        return NetworkError(err_text)
+    return Exception(err_text)
+
+
+def make_sync_once(engine, settings: Settings):
+    """Adapt poll_once to the supervisor contract (raise on failure)."""
+    def sync_once() -> None:
+        summary = poll_once(engine, settings)
+        if summary.status == "failed":
+            raise _classify_error(_run_error(engine, summary.run_id))
+        # "skipped" (lock held by a parallel run) is not a failure.
+    return sync_once
+
+
+def make_on_state(engine, service: str = "ingestor"):
+    """Persist supervisor state changes for the Data health tab."""
+    def on_state(state: SyncState, info: dict) -> None:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO sync_state (service, state, since, last_error, updated_at)"
+                    " VALUES (:service, :state, now(), :err, now())"
+                    " ON CONFLICT (service) DO UPDATE SET state = EXCLUDED.state,"
+                    " since = CASE WHEN sync_state.state <> EXCLUDED.state"
+                    " THEN now() ELSE sync_state.since END,"
+                    " last_error = EXCLUDED.last_error, updated_at = now()"
+                ),
+                {"service": service, "state": state.value,
+                 "err": info.get("error") if isinstance(info, dict) else None},
+            )
+    return on_state
 
 
 def run_loop(engine, settings: Settings) -> None:
-    global _stop
-    signal.signal(signal.SIGTERM, _handle_stop)
-    signal.signal(signal.SIGINT, _handle_stop)
-    failures = 0
-    while not _stop:
-        try:
-            summary = poll_once(engine, settings)
-            if summary.status == "failed":
-                failures += 1
-            else:
-                failures = 0
-        except Exception:
-            log.exception("poll_once raised")
-            failures += 1
-        if failures >= 5:
-            log.error("ingestion unhealthy: 5 consecutive failures")
-        for _ in range(settings.poll_interval_s):
-            if _stop:
-                break
-            time.sleep(1)
+    """Supervised poll loop: never exits on device/network failure.
+
+    Cable pull -> cheap TCP probes + backoff (no API hammering, no log spam)
+    -> automatic sync on replug, with poll_range() backfilling the outage days.
+    Auth rejection -> one attempt per hour (no lockout risk).
+    State changes land in sync_state for the Data health tab.
+    """
+    stop = threading.Event()
+
+    def _handle(signum, frame):
+        stop.set()
+
+    signal.signal(signal.SIGTERM, _handle)
+    signal.signal(signal.SIGINT, _handle)
+    host, port = device_host_port(settings)
+    cfg = SupervisorConfig(
+        poll_interval_s=settings.poll_interval_s,
+        probe_interval_s=min(30, settings.poll_interval_s),
+    )
+    on_state = make_on_state(engine)
+    on_state(SyncState.HEALTHY, {})  # ensure the row exists even before any transition
+    # Unparsable device URL: probing is meaningless, always attempt the API.
+    extra = {} if host else {"probe": lambda *a: True}
+    run_forever(
+        make_sync_once(engine, settings),
+        host=host or "127.0.0.1",
+        port=port,
+        cfg=cfg,
+        on_state=on_state,
+        stop=stop,
+        **extra,
+    )
 
 
 LOCK_WAIT_S = 15

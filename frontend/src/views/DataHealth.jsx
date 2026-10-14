@@ -31,6 +31,8 @@ export default function DataHealth({ scope }) {
   const last = coverage?.sync_log?.[0];
   const lastAgeH = last ? (Date.now() - new Date(last.run_at).getTime()) / 3600000 : null;
   const ageTone = lastAgeH === null ? colors.muted : lastAgeH > 72 ? colors.alert : lastAgeH > 24 ? '#c58a1b' : colors.good;
+  const sync = coverage?.sync_state?.ingestor;
+  const syncTone = !sync ? colors.muted : sync.state === 'healthy' ? colors.good : sync.state === 'degraded' ? '#c58a1b' : colors.alert;
 
   const counts = (coverage?.per_date ?? []).map((d) => d.count).sort((a, b) => a - b);
   const typical = counts.length ? counts[Math.floor(counts.length / 2)] : 0;
@@ -41,16 +43,19 @@ export default function DataHealth({ scope }) {
       <section style={{ display: 'flex', flexWrap: 'wrap', gap: 0, marginBottom: 24, border: `1px solid ${colors.line}`, borderRadius: 4, overflow: 'hidden', background: colors.panel }}>
         {[
           ['Last sync', last ? `${nairobi(last.run_at)} (${age(last.run_at)})` : '—', ageTone],
+          ['Poller link', sync ? sync.state : 'unknown', syncTone, null,
+            sync?.last_error ? `Since ${nairobi(sync.since)} — ${sync.last_error}` : (sync ? `Since ${nairobi(sync.since)}` : 'no data yet')],
           ['Data range', coverage?.date_min && coverage?.date_max ? `${coverage.date_min} – ${coverage.date_max}` : '—'],
           ['Rows / employees', coverage ? `${coverage.attendance_rows} / ${coverage.employees}` : '—'],
           ['Leave data', (coverage?.leave_by_month ?? []).length ? `Loaded (${(coverage.leave_by_month).join(', ')})` : 'Not loaded'],
           ['No punches (filter)', agg.neverPunchedCount, undefined, '/employees?group=nopunch'],
-        ].map(([label, value, tone, to], i) => (
+        ].map(([label, value, tone, to, sub], i) => (
           <div key={label} style={{ flex: '1 1 200px', padding: '14px 16px', borderRight: `1px solid ${colors.line}` }}>
             <div style={{ fontSize: 12, color: colors.muted, marginBottom: 6 }}>{label}</div>
             <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, color: tone || colors.ink }}>
-              {to ? <Link to={to} style={{ color: colors.select }}>{value}</Link> : value}
+              {typeof to === 'string' && to.startsWith('/') ? <Link to={to} style={{ color: colors.select }}>{value}</Link> : value}
             </div>
+            {sub && <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 4 }}>{sub}</div>}
           </div>
         ))}
       </section>
