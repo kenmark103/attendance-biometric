@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2.extras import execute_values
 
 from app.core import settings
-from app.core.db import get_conn
+from app.core.db import get_db
 from app.core.deps import admin, viewer
 from app.routers.schemas import (
     BulkAttendanceIn,
@@ -19,19 +19,17 @@ router = APIRouter(tags=["attendance"])
 
 
 @router.get("/teams")
-def list_teams(user=Depends(viewer)):
-    conn = get_conn()
+def list_teams(user=Depends(viewer), conn=Depends(get_db)):
     cur = conn.cursor()
     cur.execute("SELECT id, name FROM teams ORDER BY name")
     rows = cur.fetchall()
     cur.close()
-    conn.close()
     return rows
 
 
 @router.get("/employees")
-def list_employees(team_id: Optional[int] = None, user=Depends(viewer)):
-    conn = get_conn()
+def list_employees(team_id: Optional[int] = None, user=Depends(viewer),
+                   conn=Depends(get_db)):
     cur = conn.cursor()
     if team_id:
         cur.execute(
@@ -42,7 +40,6 @@ def list_employees(team_id: Optional[int] = None, user=Depends(viewer)):
         cur.execute("SELECT id, name, current_role, current_shift, status, current_team_id FROM employees ORDER BY name")
     rows = cur.fetchall()
     cur.close()
-    conn.close()
     return rows
 
 
@@ -55,8 +52,8 @@ def get_attendance(
     limit: int = Query(5000, ge=1, le=20000),
     offset: int = Query(0, ge=0),
     user=Depends(viewer),
+    conn=Depends(get_db),
 ):
-    conn = get_conn()
     cur = conn.cursor()
 
     clauses, params = [], []
@@ -90,7 +87,6 @@ def get_attendance(
     )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
     return rows
 
 
@@ -102,8 +98,8 @@ def get_leave(
     limit: int = Query(5000, ge=1, le=20000),
     offset: int = Query(0, ge=0),
     user=Depends(viewer),
+    conn=Depends(get_db),
 ):
-    conn = get_conn()
     cur = conn.cursor()
 
     clauses, params = [], []
@@ -129,7 +125,6 @@ def get_leave(
     )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
     return rows
 
 
@@ -138,9 +133,9 @@ def get_holidays(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     user=Depends(viewer),
+    conn=Depends(get_db),
 ):
     """Empty until the Zoho holiday sync exists — table is ready, nothing populates it yet."""
-    conn = get_conn()
     cur = conn.cursor()
     clauses, params = [], []
     if date_from:
@@ -151,12 +146,11 @@ def get_holidays(
     cur.execute(f"SELECT id, date, name, source FROM holidays {where} ORDER BY date", params)
     rows = cur.fetchall()
     cur.close()
-    conn.close()
     return rows
 
 
 @router.get("/stats/coverage")
-def stats_coverage(user=Depends(viewer)):
+def stats_coverage(user=Depends(viewer), conn=Depends(get_db)):
     """Sync-verification aggregate: proves what actually landed in the DB.
 
     Returns total attendance rows, date range, per-date counts, per-month
@@ -164,7 +158,6 @@ def stats_coverage(user=Depends(viewer)):
     latest sync_log entries — everything the Sync-check tab needs to
     compare DB state against the source file, in one request.
     """
-    conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         "SELECT COUNT(*) AS n, MIN(date) AS dmin, MAX(date) AS dmax FROM attendance_records"
@@ -212,7 +205,6 @@ def stats_coverage(user=Depends(viewer)):
     cur.execute("SELECT source, through_date FROM leave_coverage")
     leave_coverage = {r["source"]: str(r["through_date"]) for r in cur.fetchall()}
     cur.close()
-    conn.close()
     return {
         "attendance_rows": totals["n"],
         "date_min": str(totals["dmin"]) if totals["dmin"] else None,
@@ -248,8 +240,8 @@ def stats_coverage(user=Depends(viewer)):
 
 
 @router.get("/sync-log")
-def list_sync_log(limit: int = Query(50, ge=1, le=200), user=Depends(viewer)):
-    conn = get_conn()
+def list_sync_log(limit: int = Query(50, ge=1, le=200), user=Depends(viewer),
+                  conn=Depends(get_db)):
     cur = conn.cursor()
     cur.execute(
         "SELECT id, source, run_at, records_processed, records_failed, status, notes "
@@ -258,7 +250,6 @@ def list_sync_log(limit: int = Query(50, ge=1, le=200), user=Depends(viewer)):
     )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
     return rows
 
 
@@ -276,13 +267,13 @@ INSERT_CHUNK_SIZE = 500  # matters at real biometric-feed volume, not at today's
 
 
 @router.post("/attendance/bulk")
-def bulk_insert_attendance(payload: BulkAttendanceIn, user=Depends(admin)):
+def bulk_insert_attendance(payload: BulkAttendanceIn, user=Depends(admin),
+                           conn=Depends(get_db)):
     if payload.source not in ALLOWED_SOURCES:
         raise HTTPException(status_code=400, detail=f"source must be one of {sorted(ALLOWED_SOURCES)}")
     if not payload.records:
         return {"inserted": 0, "teams_created": 0, "employees_upserted": 0}
 
-    conn = get_conn()
     cur = conn.cursor()
 
     # Teams and employees have to exist before attendance can reference
@@ -353,16 +344,15 @@ def bulk_insert_attendance(payload: BulkAttendanceIn, user=Depends(admin)):
     )
     conn.commit()
     cur.close()
-    conn.close()
     return {"inserted": inserted, "teams_created": len(team_names), "employees_upserted": len(employees)}
 
 
 @router.post("/leave/bulk")
-def bulk_insert_leave(payload: BulkLeaveIn, user=Depends(admin)):
+def bulk_insert_leave(payload: BulkLeaveIn, user=Depends(admin),
+                      conn=Depends(get_db)):
     if not payload.records:
         return {"inserted": 0}
 
-    conn = get_conn()
     cur = conn.cursor()
     values = [(r.employee_id, r.date, r.leave_type, r.status, payload.source) for r in payload.records]
     execute_values(
@@ -375,7 +365,6 @@ def bulk_insert_leave(payload: BulkLeaveIn, user=Depends(admin)):
     )
     conn.commit()
     cur.close()
-    conn.close()
     return {"inserted": len(values)}
 
 
@@ -383,12 +372,12 @@ def bulk_insert_leave(payload: BulkLeaveIn, user=Depends(admin)):
 def update_attendance_teams(
     payload: BulkAttendanceTeamUpdateIn,
     user=Depends(admin),
+    conn=Depends(get_db),
 ):
 
     if not payload.records:
         return {"updated": 0, "skipped": 0}
 
-    conn = get_conn()
     cur = conn.cursor()
 
     updated = 0
@@ -452,4 +441,3 @@ def update_attendance_teams(
 
     finally:
         cur.close()
-        conn.close()

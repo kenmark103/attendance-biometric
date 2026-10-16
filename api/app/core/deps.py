@@ -11,13 +11,13 @@ from fastapi.security import HTTPBearer
 
 from app.auth.security import decode_access_token
 from app.core import settings
-from app.core.db import get_conn
+from app.core.db import get_db
 
 bearer = HTTPBearer(auto_error=False)
 RANK = {'viewer': 1, 'manager': 2, 'admin': 3}
 
 
-def current_user(creds=Depends(bearer)):
+def current_user(creds=Depends(bearer), conn=Depends(get_db)):
     if not creds:
         raise HTTPException(401, 'not_authenticated',
                             headers={'WWW-Authenticate': 'Bearer'})
@@ -29,14 +29,10 @@ def current_user(creds=Depends(bearer)):
     except jwt.PyJWTError:
         raise HTTPException(401, 'invalid_token',
                             headers={'WWW-Authenticate': 'Bearer'})
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM users WHERE id = %s", (claims['sub'],))
-        user = cur.fetchone()
-        cur.close()
-    finally:
-        conn.close()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE id = %s", (claims['sub'],))
+    user = cur.fetchone()
+    cur.close()
     if not user or not user['is_active']:
         raise HTTPException(401, 'invalid_token')
     return user

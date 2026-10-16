@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import create_engine
 
 from app.core.deps import admin
-from app.core.db import get_conn
+from app.core.db import get_db
 from app.ingestion.config import _normalize_db_url, load_settings, ConfigError
 from app.ingestion.scope import import_scope
 from app.ingestion.service import poll_once
@@ -34,7 +34,7 @@ def _engine():
 
 
 @router.post("/ingestion/sync-now")
-def sync_now(user=Depends(admin)):
+def sync_now(user=Depends(admin), conn=Depends(get_db)):
     try:
         settings = load_settings()
     except ConfigError as exc:
@@ -67,19 +67,15 @@ def sync_now(user=Depends(admin)):
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"promotion script unreadable: {exc}")
 
-    conn = get_conn()
     conn.autocommit = True
-    try:
-        cur = conn.cursor()
-        cur.execute(promote_sql)
-        cur.execute(
-            "SELECT records_processed FROM sync_log WHERE source = 'cosec_promotion'"
-            " ORDER BY id DESC LIMIT 1"
-        )
-        row = cur.fetchone()
-        cur.close()
-    finally:
-        conn.close()
+    cur = conn.cursor()
+    cur.execute(promote_sql)
+    cur.execute(
+        "SELECT records_processed FROM sync_log WHERE source = 'cosec_promotion'"
+        " ORDER BY id DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    cur.close()
     promoted = row["records_processed"] if row else 0
     return {
         "poll": {

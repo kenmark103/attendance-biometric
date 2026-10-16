@@ -8,14 +8,14 @@ from urllib.parse import urlencode
 
 import httpx
 import jwt
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from jwt import PyJWKClient
 
 from app.auth.sessions import issue_session, log_event
 from app.core import settings
-from app.core.db import get_conn
+from app.core.db import get_db
 from app.core.deps import RANK
 
 router = APIRouter(tags=["auth"])
@@ -155,7 +155,8 @@ def ms_login():
 
 @router.get("/auth/microsoft/callback")
 async def ms_callback(request: Request, code: str | None = None,
-                      state: str | None = None, error: str | None = None):
+                      state: str | None = None, error: str | None = None,
+                      conn=Depends(get_db)):
     if error:
         return _fail('sso_failed')
     raw_tx = request.cookies.get(OIDC_COOKIE)
@@ -201,26 +202,22 @@ async def ms_callback(request: Request, code: str | None = None,
     except Exception:
         return _clear(_fail('sso_failed'))
 
-    conn = get_conn()
     try:
-        try:
-            user = resolve_sso_user(conn, claims)
-        except SsoDenied as denied:
-            cur = conn.cursor()
-            log_event(cur, user_id=None,
-                      email=(claims.get('email') or claims.get('preferred_username') or ''),
-                      event='sso_denied', provider='entra', request=request,
-                      detail=denied.code)
-            conn.commit()
-            cur.close()
-            return _clear(_fail(denied.code))
-        resp = _clear(RedirectResponse('/', status_code=302))
-        issue_session(conn, user, request, resp)
+        user = resolve_sso_user(conn, claims)
+    except SsoDenied as denied:
         cur = conn.cursor()
-        log_event(cur, user_id=user['id'], email=user['email'],
-                  event='sso_ok', provider='entra', request=request)
+        log_event(cur, user_id=None,
+                  email=(claims.get('email') or claims.get('preferred_username') or ''),
+                  event='sso_denied', provider='entra', request=request,
+                  detail=denied.code)
         conn.commit()
         cur.close()
-        return resp
-    finally:
-        conn.close()
+        return _clear(_fail(denied.code))
+    resp = _clear(RedirectResponse('/', status_code=302))
+    issue_session(conn, user, request, resp)
+    cur = conn.cursor()
+    log_event(cur, user_id=user['id'], email=user['email'],
+              event='sso_ok', provider='entra', request=request)
+    conn.commit()
+    cur.close()
+    return resp

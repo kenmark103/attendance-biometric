@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 
 from app.core import settings
-from app.core.db import get_conn
+from app.core.db import get_conn, get_db
 from app.core.deps import admin, viewer
 from app.leave import service
 from app.leave.janitor import run_janitor
@@ -66,7 +66,8 @@ def _mark_failed(import_id: int | None, error_id: str, note: str) -> None:
 
 
 @router.post("/imports")
-def upload_leave(file: UploadFile = File(...), user=Depends(admin)):
+def upload_leave(file: UploadFile = File(...), user=Depends(admin),
+                 conn=Depends(get_db)):
     import psycopg2.errors  # noqa: PLC0415 (error type only)
 
     filename = (file.filename or "").strip()
@@ -81,7 +82,6 @@ def upload_leave(file: UploadFile = File(...), user=Depends(admin)):
                                    f"(max {settings.LEAVE_UPLOAD_MAX_MB} MB)")
     sha256 = __import__("hashlib").sha256(data).hexdigest()
 
-    conn = get_conn()
     try:
         cur = conn.cursor()
         run_janitor(conn)
@@ -144,22 +144,16 @@ def upload_leave(file: UploadFile = File(...), user=Depends(admin)):
         raise HTTPException(status_code=500,
                             detail=f"import failed and nothing was saved "
                                    f"(error_id={error_id}); try again")
-    finally:
-        conn.close()
     payload = _payload(imp)
     payload.update({"already_imported": False, "counts": counts})
     return payload
 
 
 @router.get("/imports/{import_id}")
-def get_import(import_id: int, user=Depends(admin)):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        imp = service.get_import(cur, import_id)
-        cur.close()
-    finally:
-        conn.close()
+def get_import(import_id: int, user=Depends(admin), conn=Depends(get_db)):
+    cur = conn.cursor()
+    imp = service.get_import(cur, import_id)
+    cur.close()
     if imp is None:
         raise HTTPException(status_code=404, detail="import not found")
     return _payload(imp)
@@ -169,129 +163,116 @@ def get_import(import_id: int, user=Depends(admin)):
 def list_issues(import_id: int, severity: str | None = Query(None),
                 code: str | None = Query(None), sheet: str | None = Query(None),
                 limit: int = Query(100, ge=1, le=1000),
-                offset: int = Query(0, ge=0), user=Depends(admin)):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        if service.get_import(cur, import_id) is None:
-            cur.close()
-            raise HTTPException(status_code=404, detail="import not found")
-        clauses, params = ["import_id = %s"], [import_id]
-        if severity:
-            clauses.append("severity = %s")
-            params.append(severity)
-        if code:
-            clauses.append("code = %s")
-            params.append(code)
-        if sheet:
-            clauses.append("sheet = %s")
-            params.append(sheet)
-        where = "WHERE " + " AND ".join(clauses)
-        cur.execute(f"SELECT COUNT(*) AS n FROM leave_import_issue {where}", params)
-        total = cur.fetchone()["n"]
-        cur.execute(
-            f"""SELECT id, severity, code, sheet, row, col, employee_id, date,
-                       occurrences, message, samples
-                FROM leave_import_issue {where}
-                ORDER BY CASE severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1
-                         ELSE 2 END, code, sheet NULLS LAST, id
-                LIMIT %s OFFSET %s""",
-            [*params, limit, offset])
-        rows = [dict(r, date=str(r["date"]) if r["date"] else None)
-                for r in cur.fetchall()]
+                offset: int = Query(0, ge=0), user=Depends(admin),
+                conn=Depends(get_db)):
+    cur = conn.cursor()
+    if service.get_import(cur, import_id) is None:
         cur.close()
-    finally:
-        conn.close()
+        raise HTTPException(status_code=404, detail="import not found")
+    clauses, params = ["import_id = %s"], [import_id]
+    if severity:
+        clauses.append("severity = %s")
+        params.append(severity)
+    if code:
+        clauses.append("code = %s")
+        params.append(code)
+    if sheet:
+        clauses.append("sheet = %s")
+        params.append(sheet)
+    where = "WHERE " + " AND ".join(clauses)
+    cur.execute(f"SELECT COUNT(*) AS n FROM leave_import_issue {where}", params)
+    total = cur.fetchone()["n"]
+    cur.execute(
+        f"""SELECT id, severity, code, sheet, row, col, employee_id, date,
+                   occurrences, message, samples
+            FROM leave_import_issue {where}
+            ORDER BY CASE severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1
+                     ELSE 2 END, code, sheet NULLS LAST, id
+            LIMIT %s OFFSET %s""",
+        [*params, limit, offset])
+    rows = [dict(r, date=str(r["date"]) if r["date"] else None)
+            for r in cur.fetchall()]
+    cur.close()
     return {"total": total, "limit": limit, "offset": offset, "issues": rows}
 
 
 @router.get("/imports/{import_id}/changes")
 def list_changes(import_id: int, type: str | None = Query(None),
                  limit: int = Query(100, ge=1, le=1000),
-                 offset: int = Query(0, ge=0), user=Depends(admin)):
+                 offset: int = Query(0, ge=0), user=Depends(admin),
+                 conn=Depends(get_db)):
     if type is not None and type not in ("new", "changed", "leave_removed"):
         raise HTTPException(status_code=400,
                             detail="type must be new, changed or leave_removed")
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        if service.get_import(cur, import_id) is None:
-            cur.close()
-            raise HTTPException(status_code=404, detail="import not found")
-        base = ("FROM leave_import_staging s LEFT JOIN calendar_day c "
-                "ON c.employee_id = s.employee_id AND c.date = s.date "
-                "AND c.source = 'xls' WHERE s.import_id = %s")
-        extra, params = "", [import_id]
-        if type == "new":
-            extra = " AND c.employee_id IS NULL"
-        elif type == "changed":
-            extra = (" AND c.employee_id IS NOT NULL"
-                     " AND c.raw_code IS DISTINCT FROM s.raw_code")
-        elif type == "leave_removed":
-            extra = " AND c.kind = 'leave' AND s.kind <> 'leave'"
-        cur.execute(f"SELECT COUNT(*) AS n {base}{extra}", params)
-        total = cur.fetchone()["n"]
-        cur.execute(
-            f"""SELECT s.employee_id, s.date, s.raw_code AS new_raw, s.kind AS new_kind,
-                       c.raw_code AS old_raw, c.kind AS old_kind,
-                       CASE WHEN c.employee_id IS NULL THEN 'new'
-                            WHEN c.kind = 'leave' AND s.kind <> 'leave'
-                            THEN 'leave_removed'
-                            WHEN c.raw_code IS DISTINCT FROM s.raw_code THEN 'changed'
-                            ELSE 'unchanged' END AS change_type
-                {base}{extra} ORDER BY s.date, s.employee_id LIMIT %s OFFSET %s""",
-            [*params, limit, offset])
-        rows = [dict(r, date=str(r["date"])) for r in cur.fetchall()]
+    cur = conn.cursor()
+    if service.get_import(cur, import_id) is None:
         cur.close()
-    finally:
-        conn.close()
+        raise HTTPException(status_code=404, detail="import not found")
+    base = ("FROM leave_import_staging s LEFT JOIN calendar_day c "
+            "ON c.employee_id = s.employee_id AND c.date = s.date "
+            "AND c.source = 'xls' WHERE s.import_id = %s")
+    extra, params = "", [import_id]
+    if type == "new":
+        extra = " AND c.employee_id IS NULL"
+    elif type == "changed":
+        extra = (" AND c.employee_id IS NOT NULL"
+                 " AND c.raw_code IS DISTINCT FROM s.raw_code")
+    elif type == "leave_removed":
+        extra = " AND c.kind = 'leave' AND s.kind <> 'leave'"
+    cur.execute(f"SELECT COUNT(*) AS n {base}{extra}", params)
+    total = cur.fetchone()["n"]
+    cur.execute(
+        f"""SELECT s.employee_id, s.date, s.raw_code AS new_raw, s.kind AS new_kind,
+                   c.raw_code AS old_raw, c.kind AS old_kind,
+                   CASE WHEN c.employee_id IS NULL THEN 'new'
+                        WHEN c.kind = 'leave' AND s.kind <> 'leave'
+                        THEN 'leave_removed'
+                        WHEN c.raw_code IS DISTINCT FROM s.raw_code THEN 'changed'
+                        ELSE 'unchanged' END AS change_type
+            {base}{extra} ORDER BY s.date, s.employee_id LIMIT %s OFFSET %s""",
+        [*params, limit, offset])
+    rows = [dict(r, date=str(r["date"])) for r in cur.fetchall()]
+    cur.close()
     return {"total": total, "limit": limit, "offset": offset, "changes": rows}
 
 
 @router.get("/imports")
-def list_imports(limit: int = Query(50, ge=1, le=200), user=Depends(admin)):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """SELECT i.id, i.status, i.original_filename, u.email AS uploaded_by,
-                      i.uploaded_at, i.period_start, i.period_end,
-                      i.coverage_through, i.counts, i.committed_at, i.reverted_at
-               FROM leave_import i LEFT JOIN users u ON u.id = i.uploaded_by
-               ORDER BY i.id DESC LIMIT %s""",
-            (limit,))
-        rows = [dict(r,
-                     uploaded_at=str(r["uploaded_at"]) if r["uploaded_at"] else None,
-                     period_start=str(r["period_start"]) if r["period_start"] else None,
-                     period_end=str(r["period_end"]) if r["period_end"] else None,
-                     coverage_through=str(r["coverage_through"])
-                     if r["coverage_through"] else None,
-                     committed_at=str(r["committed_at"]) if r["committed_at"] else None,
-                     reverted_at=str(r["reverted_at"]) if r["reverted_at"] else None)
-                for r in cur.fetchall()]
-        cur.close()
-    finally:
-        conn.close()
+def list_imports(limit: int = Query(50, ge=1, le=200), user=Depends(admin),
+                 conn=Depends(get_db)):
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT i.id, i.status, i.original_filename, u.email AS uploaded_by,
+                  i.uploaded_at, i.period_start, i.period_end,
+                  i.coverage_through, i.counts, i.committed_at, i.reverted_at
+           FROM leave_import i LEFT JOIN users u ON u.id = i.uploaded_by
+           ORDER BY i.id DESC LIMIT %s""",
+        (limit,))
+    rows = [dict(r,
+                 uploaded_at=str(r["uploaded_at"]) if r["uploaded_at"] else None,
+                 period_start=str(r["period_start"]) if r["period_start"] else None,
+                 period_end=str(r["period_end"]) if r["period_end"] else None,
+                 coverage_through=str(r["coverage_through"])
+                 if r["coverage_through"] else None,
+                 committed_at=str(r["committed_at"]) if r["committed_at"] else None,
+                 reverted_at=str(r["reverted_at"]) if r["reverted_at"] else None)
+            for r in cur.fetchall()]
+    cur.close()
     return rows
 
 
 @router.get("/coverage")
-def get_coverage(user=Depends(admin)):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT source, through_date, batch_id, updated_at FROM leave_coverage")
-        sources = {r["source"]: {
-            "through_date": str(r["through_date"]),
-            "batch_id": r["batch_id"],
-            "updated_at": str(r["updated_at"]),
-        } for r in cur.fetchall()}
-        cur.execute("SELECT MAX(committed_at) AS last FROM leave_import "
-                    "WHERE status = 'committed'")
-        last = cur.fetchone()["last"]
-        cur.close()
-    finally:
-        conn.close()
+def get_coverage(user=Depends(admin), conn=Depends(get_db)):
+    cur = conn.cursor()
+    cur.execute("SELECT source, through_date, batch_id, updated_at FROM leave_coverage")
+    sources = {r["source"]: {
+        "through_date": str(r["through_date"]),
+        "batch_id": r["batch_id"],
+        "updated_at": str(r["updated_at"]),
+    } for r in cur.fetchall()}
+    cur.execute("SELECT MAX(committed_at) AS last FROM leave_import "
+                "WHERE status = 'committed'")
+    last = cur.fetchone()["last"]
+    cur.close()
     primary = sources.get("xls") or sources.get("api")
     return {
         "through_date": primary["through_date"] if primary else None,
@@ -323,10 +304,10 @@ def _committed_summary(imp: dict) -> dict:
 
 
 @router.post("/imports/{import_id}/commit")
-def commit_import(import_id: int, payload: LeaveCommitIn, user=Depends(admin)):
+def commit_import(import_id: int, payload: LeaveCommitIn, user=Depends(admin),
+                 conn=Depends(get_db)):
     import psycopg2.errors  # noqa: PLC0415 (error type only)
 
-    conn = get_conn()
     try:
         cur = conn.cursor()
         if not service.try_commit_lock(cur):
@@ -421,56 +402,43 @@ def commit_import(import_id: int, payload: LeaveCommitIn, user=Depends(admin)):
         raise HTTPException(status_code=500,
                             detail=f"commit failed and nothing was saved "
                                    f"(error_id={error_id}); retry is safe")
-    finally:
-        conn.close()
 
 
 @router.post("/imports/{import_id}/discard")
-def discard_import(import_id: int, user=Depends(admin)):
-    conn = get_conn()
+def discard_import(import_id: int, user=Depends(admin), conn=Depends(get_db)):
+    cur = conn.cursor()
     try:
-        cur = conn.cursor()
-        try:
-            result = service.discard_import(cur, import_id)
-        except LookupError:
-            conn.rollback()
-            raise HTTPException(status_code=404, detail="import not found")
-        except ValueError as exc:
-            conn.rollback()
-            raise HTTPException(status_code=422, detail=str(exc))
-        conn.commit()
-        cur.close()
-        return result
-    finally:
-        conn.close()
+        result = service.discard_import(cur, import_id)
+    except LookupError:
+        conn.rollback()
+        raise HTTPException(status_code=404, detail="import not found")
+    except ValueError as exc:
+        conn.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    conn.commit()
+    cur.close()
+    return result
 
 
 @router.post("/imports/{import_id}/revert")
-def revert_import(import_id: int, user=Depends(admin)):
-    conn = get_conn()
+def revert_import(import_id: int, user=Depends(admin), conn=Depends(get_db)):
+    cur = conn.cursor()
+    if not service.try_commit_lock(cur):
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="another commit holds "
+                            "the lock (IMPORT_IN_PROGRESS)")
     try:
-        cur = conn.cursor()
-        if not service.try_commit_lock(cur):
-            conn.rollback()
-            raise HTTPException(status_code=409, detail="another commit holds "
-                                "the lock (IMPORT_IN_PROGRESS)")
-        try:
-            result = service.revert_import(
-                cur, import_id, service.load_code_map(cur))
-        except LookupError:
-            conn.rollback()
-            raise HTTPException(status_code=404, detail="import not found")
-        except ValueError as exc:
-            conn.rollback()
-            # "Only the most recent committed import" is a state conflict.
-            status = 409 if "most recent" in str(exc) else 422
-            raise HTTPException(status_code=status, detail=str(exc))
-        conn.commit()
-        cur.close()
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
+        result = service.revert_import(
+            cur, import_id, service.load_code_map(cur))
+    except LookupError:
+        conn.rollback()
+        raise HTTPException(status_code=404, detail="import not found")
+    except ValueError as exc:
+        conn.rollback()
+        # "Only the most recent committed import" is a state conflict.
+        status = 409 if "most recent" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 — 500 + error_id, never a trace
         conn.rollback()
         error_id = uuid.uuid4().hex[:8]
         print(f"leave revert {import_id} failed: error_id={error_id} "
@@ -478,8 +446,9 @@ def revert_import(import_id: int, user=Depends(admin)):
         raise HTTPException(status_code=500,
                             detail=f"revert failed and nothing was saved "
                                    f"(error_id={error_id})")
-    finally:
-        conn.close()
+    conn.commit()
+    cur.close()
+    return result
 
 
 @router.get("/calendar")
@@ -490,6 +459,7 @@ def get_calendar(
     limit: int = Query(5000, ge=1, le=20000),
     offset: int = Query(0, ge=0),
     user=Depends(viewer),
+    conn=Depends(get_db),
 ):
     """Flat per-day calendar rows for the attendance overlay (spec §9).
 
@@ -515,84 +485,71 @@ def get_calendar(
         clauses.append("c.date <= %s")
         params.append(date_to)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"""SELECT COUNT(*) AS n FROM (
-                    SELECT DISTINCT ON (c.employee_id, c.date) c.employee_id
-                    FROM calendar_day c {where}
-                ) d""",
-            params)
-        total = cur.fetchone()["n"]
-        cur.execute(
-            f"""SELECT d.employee_id, d.date, d.source, d.raw_code, d.kind,
-                       d.leave_code, d.fraction, d.zoho_presence, m.label
-                FROM (
-                    SELECT DISTINCT ON (c.employee_id, c.date)
-                        c.employee_id, c.date, c.source, c.raw_code, c.kind,
-                        c.leave_code, c.fraction, c.zoho_presence
-                    FROM calendar_day c {where}
-                    ORDER BY c.employee_id, c.date, CASE c.source {case} ELSE 99 END
-                ) d LEFT JOIN leave_code_map m ON m.code = d.leave_code
-                ORDER BY d.date DESC, d.employee_id
-                LIMIT %s OFFSET %s""",
-            [*params, limit, offset])
-        rows = []
-        for r in cur.fetchall():
-            if r["kind"] != "leave":
-                leave_type = None
-            elif privileged:
-                leave_type = r["label"] or r["leave_code"] or "On leave"
-            else:
-                leave_type = "On leave"
-            rows.append({
-                "employee_id": r["employee_id"], "date": str(r["date"]),
-                "source": r["source"], "raw_code": r["raw_code"],
-                "day_kind": r["kind"], "leave_type": leave_type,
-                "leave_fraction": float(r["fraction"]),
-                "zoho_presence": r["zoho_presence"],
-            })
-        cur.close()
-    finally:
-        conn.close()
+    cur = conn.cursor()
+    cur.execute(
+        f"""SELECT COUNT(*) AS n FROM (
+                SELECT DISTINCT ON (c.employee_id, c.date) c.employee_id
+                FROM calendar_day c {where}
+            ) d""",
+        params)
+    total = cur.fetchone()["n"]
+    cur.execute(
+        f"""SELECT d.employee_id, d.date, d.source, d.raw_code, d.kind,
+                   d.leave_code, d.fraction, d.zoho_presence, m.label
+            FROM (
+                SELECT DISTINCT ON (c.employee_id, c.date)
+                    c.employee_id, c.date, c.source, c.raw_code, c.kind,
+                    c.leave_code, c.fraction, c.zoho_presence
+                FROM calendar_day c {where}
+                ORDER BY c.employee_id, c.date, CASE c.source {case} ELSE 99 END
+            ) d LEFT JOIN leave_code_map m ON m.code = d.leave_code
+            ORDER BY d.date DESC, d.employee_id
+            LIMIT %s OFFSET %s""",
+        [*params, limit, offset])
+    rows = []
+    for r in cur.fetchall():
+        if r["kind"] != "leave":
+            leave_type = None
+        elif privileged:
+            leave_type = r["label"] or r["leave_code"] or "On leave"
+        else:
+            leave_type = "On leave"
+        rows.append({
+            "employee_id": r["employee_id"], "date": str(r["date"]),
+            "source": r["source"], "raw_code": r["raw_code"],
+            "day_kind": r["kind"], "leave_type": leave_type,
+            "leave_fraction": float(r["fraction"]),
+            "zoho_presence": r["zoho_presence"],
+        })
+    cur.close()
     return {"total": total, "limit": limit, "offset": offset, "days": rows}
 
 
 @router.get("/types")
-def list_types(user=Depends(admin)):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        rows = service.list_types(cur)
-        cur.close()
-    finally:
-        conn.close()
+def list_types(user=Depends(admin), conn=Depends(get_db)):
+    cur = conn.cursor()
+    rows = service.list_types(cur)
+    cur.close()
     return rows
 
 
 @router.put("/types")
-def put_type(payload: LeaveTypeIn, user=Depends(admin)):
-    conn = get_conn()
+def put_type(payload: LeaveTypeIn, user=Depends(admin), conn=Depends(get_db)):
+    cur = conn.cursor()
     try:
-        cur = conn.cursor()
-        try:
-            result = service.upsert_type(cur, payload.model_dump())
-        except ValueError as exc:
-            conn.rollback()
-            raise HTTPException(status_code=422, detail=str(exc))
-        conn.commit()
-        cur.close()
-        return result
-    finally:
-        conn.close()
+        result = service.upsert_type(cur, payload.model_dump())
+    except ValueError as exc:
+        conn.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    conn.commit()
+    cur.close()
+    return result
 
 
 @router.post("/reprocess")
-def reprocess(user=Depends(admin)):
-    conn = get_conn()
+def reprocess(user=Depends(admin), conn=Depends(get_db)):
+    cur = conn.cursor()
     try:
-        cur = conn.cursor()
         result = service.reprocess_calendar(cur)
         conn.commit()
         cur.close()
@@ -603,5 +560,3 @@ def reprocess(user=Depends(admin)):
         print(f"leave reprocess failed: error_id={error_id} ({type(exc).__name__})")
         raise HTTPException(status_code=500,
                             detail=f"reprocess failed (error_id={error_id})")
-    finally:
-        conn.close()

@@ -7,7 +7,7 @@ import psycopg2
 import psycopg2.extras
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.db import get_conn
+from app.core.db import get_db
 from app.core.deps import viewer
 from app.routers.schemas import WfhIn
 
@@ -22,8 +22,8 @@ def list_wfh(
     limit: int = Query(5000, ge=1, le=20000),
     offset: int = Query(0, ge=0),
     user=Depends(viewer),
+    conn=Depends(get_db),
 ):
-    conn = get_conn()
     cur = conn.cursor()
     clauses, params = [], []
     if employee_id:
@@ -47,16 +47,14 @@ def list_wfh(
     )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
     return rows
 
 
 @router.post("/wfh")
-def create_wfh(payload: WfhIn, user=Depends(viewer)):
+def create_wfh(payload: WfhIn, user=Depends(viewer), conn=Depends(get_db)):
     # allow admin/manager always; for team_lead, verify they lead employee's team (best-effort)
     if user.get("role") not in ("admin", "manager"):
         # try team_lead path: look up employee team and compare lead
-        conn = get_conn()
         cur = conn.cursor()
         try:
             cur.execute("SELECT current_team_id FROM employees WHERE id = %s", (payload.employee_id,))
@@ -70,8 +68,7 @@ def create_wfh(payload: WfhIn, user=Depends(viewer)):
             else:
                 raise HTTPException(status_code=403, detail="Only admin/manager may approve WFH")
         finally:
-            cur.close(); conn.close()
-    conn = get_conn()
+            cur.close()
     cur = conn.cursor()
     # resolve actor id for audit
     cur.execute("SELECT id FROM users WHERE email = %s", (user.get("email"),))
@@ -93,19 +90,18 @@ def create_wfh(payload: WfhIn, user=Depends(viewer)):
         conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        cur.close(); conn.close()
+        cur.close()
 
 
 @router.delete("/wfh/{wfh_id}")
-def delete_wfh(wfh_id: int, user=Depends(viewer)):
+def delete_wfh(wfh_id: int, user=Depends(viewer), conn=Depends(get_db)):
     if user.get("role") not in ("admin", "manager"):
         raise HTTPException(status_code=403, detail="Only admin/manager may revoke WFH")
-    conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT employee_id, date FROM wfh_approvals WHERE id = %s", (wfh_id,))
     row = cur.fetchone()
     if not row:
-        cur.close(); conn.close()
+        cur.close()
         raise HTTPException(status_code=404, detail="Not found")
     cur.execute("DELETE FROM wfh_approvals WHERE id = %s", (wfh_id,))
     cur.execute("SELECT id FROM users WHERE email = %s", (user.get("email"),))
@@ -116,5 +112,5 @@ def delete_wfh(wfh_id: int, user=Depends(viewer)):
         (actor_id, row["employee_id"], "wfh_revoke", psycopg2.extras.Json({"date": str(row["date"])})),
     )
     conn.commit()
-    cur.close(); conn.close()
+    cur.close()
     return {"deleted": wfh_id}
