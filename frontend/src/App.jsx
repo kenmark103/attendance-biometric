@@ -23,6 +23,8 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
   const [records, setRecords] = useState(null);
+  const [calMeta, setCalMeta] = useState({});
+  const [calendarOk, setCalendarOk] = useState(true);
   const [coverage, setCoverage] = useState(null);
   const [roster, setRoster] = useState([]);
   const [error, setError] = useState(null);
@@ -62,7 +64,7 @@ export default function App() {
     async function load() {
       try {
         setLoading(true);
-        const [recs, cov, emps, teams] = await Promise.all([
+        const [dayData, cov, emps, teams] = await Promise.all([
           fetchDayRecords(),
           fetchCoverage().catch(() => null),
           fetchEmployees().catch(() => []),
@@ -70,7 +72,9 @@ export default function App() {
         ]);
         const teamById = new Map((teams || []).map((t) => [t.id, t.name]));
         if (!cancelled) {
-          setRecords(recs);
+          setRecords(dayData.records);
+          setCalMeta(dayData.calMeta || {});
+          setCalendarOk(dayData.calendarOk !== false);
           setCoverage(cov);
           setRoster((emps || []).map((e) => ({
             id: e.id, name: e.name, team: teamById.get(e.current_team_id) || 'Unassigned',
@@ -157,7 +161,7 @@ export default function App() {
             </span>
           </div>
         ) : (
-          <Dashboard records={records || []} coverage={coverage} roster={roster} user={user} onLogout={handleLogout}
+          <Dashboard records={records || []} calMeta={calMeta} calendarOk={calendarOk} coverage={coverage} roster={roster} user={user} onLogout={handleLogout}
             onSyncNow={handleSyncNow} syncing={syncing} syncMsg={syncMsg} />
         )
       } />

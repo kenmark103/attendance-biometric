@@ -132,6 +132,40 @@ the compose Postgres).
 - **SSO button errors**: expected until `ENTRA_*` are set (503
   `sso_not_configured`). Use email login meanwhile.
 
+## Applying migrations on an existing database
+
+Fresh volumes build the full schema from `db/init.sql`. If the `pgdata`
+volume predates a migration, apply the missing files in order (all are
+`IF NOT EXISTS`-safe to re-run):
+
+```bash
+docker compose up -d db
+for f in db/migrations/006_sync_state.sql db/migrations/007_leave_ingestion.sql \
+         db/migrations/008_leave_preview_names.sql db/migrations/009_leave_idempotency.sql; do
+  docker compose exec -T db psql -U attendance -d attendance -f /dev/stdin < "$f"
+done
+docker compose up -d --build
+```
+
+## Leave ingestion (manual Zoho report upload)
+
+HR re-sends the whole-year workbook weekly. An admin uploads it at
+**Leave data** (`http://localhost:3001/leave`): preview (per-sheet status,
+issues, new/changed days), then commit. Overlap is merged day-by-day, never
+replaced; only the latest committed import can be reverted. Details and the
+cell-code contract live in `docs/leave-ingestion-plan.md` (plan) and the
+ingestion spec; the workbook itself contains HR PII and is **never
+committed** (`*.xls`/`*.xlsx` are gitignored).
+
+Env knobs (defaults in `.env.example`): `EXPECTED_DEPARTMENT_LABELS`,
+`TRUST_ZOHO_PRESENCE`, `LEAVE_SOURCE_PRIORITY`, `LEAVE_TYPE_DETAIL_ROLES`,
+`MIN_PUNCH_MINUTES`, `LEAVE_UPLOAD_MAX_MB`.
+
+Local-only helpers (never CI — they read the real report):
+`scripts/leave_backfill.py` (upload + selective commit) and
+`scripts/leave_reconcile.py` (Zoho-vs-biometric report, write output to a
+temp dir, never the repo).
+
 ## Re-running the loader
 
 Upserts on `(employee_id, date)` for attendance and

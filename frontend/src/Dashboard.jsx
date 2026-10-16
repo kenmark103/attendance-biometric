@@ -11,9 +11,10 @@ import Teams, { TeamDetail } from './views/Teams.jsx';
 import Employees from './views/Employees.jsx';
 import Exceptions from './views/Exceptions.jsx';
 import DataHealth from './views/DataHealth.jsx';
+import LeaveImport from './views/LeaveImport.jsx';
 import {
   todayNairobi, classifyDay, aggregate, leaveLoadedFor, teamSlug,
-  shortDateISO, dayAndShortISO, isWeekendISO,
+  shortDateISO, dayAndShortISO, isWeekendISO, carryRec, dayWeight,
 } from './metrics.js';
 import {
   parseFilters, serializeFilters, rangeDates, teamMaps, defaultFilters,
@@ -25,6 +26,7 @@ const TABS = [
   ['/employees', 'Employees'],
   ['/exceptions', 'Exceptions'],
   ['/data-health', 'Data health'],
+  ['/leave', 'Leave data'],
 ];
 
 const SPECIFIC_DEFAULTS = { view: 'list', q: '', type: 'all', sort: '', allteams: false, group: '' };
@@ -49,7 +51,7 @@ export function scopeCaptionLine(caption, extra) {
   );
 }
 
-export default function Dashboard({ records, coverage, roster, user, onLogout, onSyncNow, syncing, syncMsg }) {
+export default function Dashboard({ records, calMeta, calendarOk, coverage, roster, user, onLogout, onSyncNow, syncing, syncMsg }) {
   const today = useMemo(() => todayNairobi(), []);
   const navigate = useNavigate();
   const location = useLocation();
@@ -116,26 +118,40 @@ export default function Dashboard({ records, coverage, roster, user, onLogout, o
   }, [roster, records, teamSet]);
 
   const leaveLoaded = leaveLoadedFor(scopeDates, coverage?.leave_by_month ?? []);
-  const ctx = useMemo(() => ({ today, leaveLoaded, excludeNeverPunched: filters.nopunch }), [today, leaveLoaded, filters.nopunch]);
+  const leaveActive = !!(coverage?.leave_coverage?.through_date);
+  const ctx = useMemo(() => ({
+    today,
+    leaveLoaded: leaveLoaded || leaveActive,
+    leaveActive,
+    coverageThrough: coverage?.leave_coverage?.through_date || null,
+    coveredDates: new Set((coverage?.per_date ?? []).filter((d) => d.count > 0).map((d) => d.date)),
+    trustZoho: coverage?.trust_zoho_presence !== false,
+    calMeta: calMeta || {},
+    excludeNeverPunched: filters.nopunch,
+  }), [today, leaveLoaded, leaveActive, coverage, calMeta, filters.nopunch]);
   const agg = useMemo(() => aggregate(rows, scopeDates, ctx, rosterInScope), [rows, scopeDates, ctx, rosterInScope]);
 
   const daily = useMemo(() => scopeDates.map((d) => {
     const byId = new Map();
     for (const r of rows) if (r.date === d) byId.set(r.employeeId, r);
-    let present = 0, expected = 0, noRecord = 0, leave = 0, inProg = 0;
+    let present = 0, expected = 0, noRecord = 0, leave = 0, inProg = 0, absent = 0, unverified = 0;
     for (const e of agg.employees) {
-      const st = classifyDay(byId.get(e.id) || { date: d, leaves: [] }, ctx);
-      if (st === 'present' || st === 'missing_checkout') present += 1;
-      if (st === 'present' || st === 'missing_checkout' || st === 'no_record') expected += 1;
-      if (st === 'no_record') noRecord += 1;
-      if (st === 'leave') leave += 1;
+      const rec = byId.get(e.id) || carryRec(e.id, d, ctx);
+      const st = classifyDay(rec, ctx);
+      const w = dayWeight(st, rec);
+      present += w.present;
+      expected += w.expected;
+      if (st === 'no_record' || st === 'absent') noRecord += w.expected;
+      if (st === 'absent') absent += w.expected;
+      if (st === 'absent_unverified' || st === 'unverified') unverified += 1;
+      if (st === 'leave' || st === 'half_leave') leave += 1;
       if (st === 'in_progress' || st === 'pending') inProg += 1;
     }
     return {
       date: d, label: dayAndShortISO(d), full: `${dayAndShortISO(d)} ${shortDateISO(d).split(' ')[0]}`,
       weekend: isWeekendISO(d),
       rate: expected ? Math.round((present / expected) * 1000) / 10 : null,
-      present, expected, noRecord, leave, inProg,
+      present, expected, noRecord, leave, inProg, absent, unverified,
     };
   }), [scopeDates, rows, agg.employees, ctx]);
 
@@ -150,13 +166,15 @@ export default function Dashboard({ records, coverage, roster, user, onLogout, o
     return { date, weekend: isWeekendISO(date), holiday: !!hol };
   }), [dates, rows]);
 
+  const activeTab = '/' + (location.pathname.split('/')[1] || '');
+  const isAdmin = user?.role === 'admin';
+  const visibleTabs = TABS.filter(([path]) => path !== '/leave' || isAdmin);
+
   const scope = {
     filters, months, teamNames, slugToName, today, dates, scopeDates, rows,
-    rosterInScope, leaveLoaded, ctx, agg, daily, teamHeadcounts, daysInView,
+    rosterInScope, leaveLoaded, leaveActive, isAdmin, calendarOk, ctx, agg, daily, teamHeadcounts, daysInView,
     coverage, update, switchTab,
   };
-
-  const activeTab = '/' + (location.pathname.split('/')[1] || '');
 
   return (
     <div style={{
@@ -176,8 +194,17 @@ export default function Dashboard({ records, coverage, roster, user, onLogout, o
           <AuthHeader user={user} onLogout={onLogout} />
         </header>
 
+        {leaveActive && calendarOk === false && (
+          <div style={{
+            border: '1px solid #c58a1b', background: '#fbf3dc', borderRadius: 4,
+            padding: '9px 14px', fontSize: 13, marginBottom: 16, color: colors.ink,
+          }}>
+            Leave overlay failed to load — days are shown unverified. Check the API and refresh.
+          </div>
+        )}
+
         <nav style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${colors.line}` }} aria-label="Views">
-          {TABS.map(([path, label]) => {
+          {visibleTabs.map(([path, label]) => {
             const active = path === activeTab || (path !== '/' && activeTab.startsWith(path));
             return (
               <Link key={path} to={{ pathname: path, search: serializeFilters(filters, months, today).toString() ? `?${serializeFilters(filters, months, today)}` : '' }}
@@ -205,6 +232,9 @@ export default function Dashboard({ records, coverage, roster, user, onLogout, o
           <Route path="/employees/:employeeId" element={<Employees scope={scope} />} />
           <Route path="/exceptions" element={<Exceptions scope={scope} />} />
           <Route path="/data-health" element={<DataHealth scope={scope} />} />
+          <Route path="/leave" element={isAdmin
+            ? <LeaveImport scope={scope} />
+            : <Navigate to={{ pathname: '/', search: location.search }} replace />} />
           <Route path="*" element={<Navigate to={{ pathname: '/', search: location.search }} replace />} />
         </Routes>
       </div>

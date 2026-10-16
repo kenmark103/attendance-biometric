@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2.extras import execute_values
 
+from app.core import settings
 from app.core.db import get_conn
 from app.core.deps import admin, viewer
 from app.routers.schemas import (
@@ -208,6 +209,8 @@ def stats_coverage(user=Depends(viewer)):
         }
         for r in cur.fetchall()
     }
+    cur.execute("SELECT source, through_date FROM leave_coverage")
+    leave_coverage = {r["source"]: str(r["through_date"]) for r in cur.fetchall()}
     cur.close()
     conn.close()
     return {
@@ -220,6 +223,12 @@ def stats_coverage(user=Depends(viewer)):
         "teams": n_teams,
         "leave_rows": n_leave,
         "leave_by_month": leave_by_month,
+        "leave_coverage": {
+            "through_date": leave_coverage.get("xls") or leave_coverage.get("api"),
+            "source": "xls" if "xls" in leave_coverage
+            else ("api" if leave_coverage else None),
+        },
+        "trust_zoho_presence": settings.TRUST_ZOHO_PRESENCE,
         "sync_state": sync_state,
         "holidays": n_holidays,
         "wfh_rows": n_wfh,

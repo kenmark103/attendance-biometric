@@ -193,3 +193,142 @@ CREATE TABLE wfh_approvals (
 );
 CREATE INDEX idx_wfh_employee_date ON wfh_approvals (employee_id, date);
 CREATE INDEX idx_wfh_date ON wfh_approvals (date);
+
+-- Leave ingestion (manual Zoho report upload). Mirrors
+-- db/migrations/007_leave_ingestion.sql — keep the two in sync.
+-- calendar_day.employee_id deliberately has no FK to employees: rows for
+-- IDs not yet in the directory are stored and apply when they appear.
+CREATE TABLE leave_import (
+    id                  SERIAL PRIMARY KEY,
+    file_sha256         TEXT NOT NULL,
+    original_filename   TEXT NOT NULL,
+    uploaded_by         UUID REFERENCES users(id) ON DELETE SET NULL,
+    uploaded_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    status              TEXT NOT NULL DEFAULT 'parsing'
+        CHECK (status IN ('parsing','preview_ready','committing','committed',
+                          'failed','discarded','expired','reverted')),
+    period_start        DATE,
+    period_end          DATE,
+    coverage_through    DATE,
+    department_label    TEXT,
+    sheet_summary       JSONB NOT NULL DEFAULT '[]',
+    counts              JSONB NOT NULL DEFAULT '{}',
+    preview_names       JSONB,                  -- in-flight preview only, purged after
+    base_version        INTEGER NOT NULL DEFAULT 0,
+    idempotency_key     TEXT,                   -- client-supplied commit retry key
+    error_id            TEXT,
+    committed_at        TIMESTAMPTZ,
+    reverted_at         TIMESTAMPTZ,
+    expires_at          TIMESTAMPTZ,
+    recompute_status    TEXT NOT NULL DEFAULT 'pending'
+        CHECK (recompute_status IN ('pending','done','failed'))
+);
+
+CREATE TABLE leave_import_staging (
+    import_id       INTEGER NOT NULL REFERENCES leave_import(id) ON DELETE CASCADE,
+    sheet           TEXT NOT NULL,
+    employee_id     TEXT NOT NULL,
+    date            DATE NOT NULL,
+    raw_code        TEXT NOT NULL,
+    kind            TEXT NOT NULL
+        CHECK (kind IN ('working','weekend','holiday','not_employed',
+                        'leave','on_duty','unknown')),
+    leave_code      TEXT,
+    fraction        NUMERIC(3,2) NOT NULL DEFAULT 1.0,
+    zoho_presence   BOOLEAN,
+    provisional     BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (import_id, employee_id, date)
+);
+CREATE INDEX idx_leave_staging_import ON leave_import_staging (import_id);
+
+CREATE TABLE leave_import_issue (
+    id              SERIAL PRIMARY KEY,
+    import_id       INTEGER NOT NULL REFERENCES leave_import(id) ON DELETE CASCADE,
+    severity        TEXT NOT NULL CHECK (severity IN ('error','warning','info')),
+    code            TEXT NOT NULL,
+    sheet           TEXT,
+    row             INTEGER,
+    col             INTEGER,
+    employee_id     TEXT,
+    date            DATE,
+    occurrences     INTEGER NOT NULL DEFAULT 1,
+    message         TEXT NOT NULL,
+    samples         JSONB
+);
+CREATE INDEX idx_leave_issue_import ON leave_import_issue (import_id);
+
+CREATE TABLE leave_code_map (
+    code                TEXT PRIMARY KEY,
+    label               TEXT NOT NULL,
+    kind                TEXT NOT NULL
+        CHECK (kind IN ('working','weekend','holiday','not_employed',
+                        'leave','on_duty','unknown')),
+    leave_group         TEXT,
+    paid                BOOLEAN,
+    counts_as_present   BOOLEAN NOT NULL DEFAULT FALSE,
+    aliases             TEXT[] NOT NULL DEFAULT '{}',
+    sensitive           BOOLEAN NOT NULL DEFAULT FALSE,
+    active              BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+INSERT INTO leave_code_map
+    (code, label, kind, leave_group, paid, counts_as_present, aliases, sensitive, active)
+VALUES
+    ('P',  'Present (Zoho)',        'working',      NULL,       NULL,  FALSE, '{}', FALSE, TRUE),
+    ('A',  'Absent (Zoho)',         'working',      NULL,       NULL,  FALSE, '{}', FALSE, TRUE),
+    ('W',  'Weekend',               'weekend',      NULL,       NULL,  FALSE, '{}', FALSE, TRUE),
+    ('H',  'Holiday',               'holiday',      NULL,       NULL,  FALSE, '{}', FALSE, TRUE),
+    ('-',  'Not employed',          'not_employed', NULL,       NULL,  FALSE, '{}', FALSE, TRUE),
+    ('EL', 'Annual Leave',          'leave',        'annual',   TRUE,  FALSE, '{ANNUAL,ANNUAL_LEAVE}',          FALSE, TRUE),
+    ('SL', 'Sick Leave',            'leave',        'sick',     TRUE,  FALSE, '{SICK,SICK_LEAVE}',              TRUE,  TRUE),
+    ('ML', 'Maternity Leave',       'leave',        'maternity',TRUE,  FALSE, '{MATERNITY,MATERNITY_LEAVE}',    TRUE,  TRUE),
+    ('PL', 'Paternity Leave',       'leave',        'paternity',TRUE,  FALSE, '{PATERNITY,PATERNITY_LEAVE}',    TRUE,  TRUE),
+    ('L',  'Unpaid Leave',          'leave',        'unpaid',   FALSE, FALSE, '{UNPAID,UNPAID_LEAVE}',          FALSE, TRUE),
+    ('OD', 'On Duty',               'on_duty',      NULL,       NULL,  TRUE,  '{ON_DUTY,ONDUTY}',               FALSE, TRUE),
+    ('SL1','Sick Leave (USA)',      'leave',        'sick',     TRUE,  FALSE, '{}', TRUE,  TRUE),
+    ('AL', 'Annual Leave (SA)',     'leave',        'annual',   TRUE,  FALSE, '{}', FALSE, TRUE)
+ON CONFLICT (code) DO NOTHING;
+
+CREATE TABLE calendar_day (
+    employee_id     TEXT NOT NULL,
+    date            DATE NOT NULL,
+    source          TEXT NOT NULL CHECK (source IN ('xls','api')),
+    raw_code        TEXT NOT NULL,
+    kind            TEXT NOT NULL
+        CHECK (kind IN ('working','weekend','holiday','not_employed',
+                        'leave','on_duty','unknown')),
+    leave_code      TEXT,
+    fraction        NUMERIC(3,2) NOT NULL DEFAULT 1.0,
+    zoho_presence   BOOLEAN,
+    batch_id        INTEGER REFERENCES leave_import(id),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (employee_id, date, source)
+);
+CREATE INDEX idx_calendar_day_date ON calendar_day (date);
+
+CREATE TABLE calendar_day_change (
+    id              BIGSERIAL PRIMARY KEY,
+    batch_id        INTEGER NOT NULL REFERENCES leave_import(id),
+    employee_id     TEXT NOT NULL,
+    date            DATE NOT NULL,
+    source          TEXT NOT NULL,
+    old_raw         TEXT,
+    new_raw         TEXT NOT NULL,
+    changed_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_calendar_change_batch ON calendar_day_change (batch_id);
+
+CREATE TABLE leave_coverage (
+    source          TEXT PRIMARY KEY CHECK (source IN ('xls','api')),
+    through_date    DATE NOT NULL,
+    batch_id        INTEGER REFERENCES leave_import(id),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- A committed (or live preview) file is a no-op on re-upload; failed,
+-- discarded, expired or reverted files may be re-uploaded fresh.
+CREATE UNIQUE INDEX uq_leave_import_sha_live ON leave_import (file_sha256)
+    WHERE status IN ('parsing', 'preview_ready', 'committing', 'committed');
+-- A commit idempotency key replays to the same import, never a duplicate.
+CREATE UNIQUE INDEX uq_leave_import_idem ON leave_import (idempotency_key)
+    WHERE idempotency_key IS NOT NULL;

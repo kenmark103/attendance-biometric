@@ -2,7 +2,7 @@
 import React, { useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { colors } from '../theme.js';
-import { formatPct, statusLabel, teamSlug, classifyDay } from '../metrics.js';
+import { formatPct, statusLabel, teamSlug, classifyDay, carryRec, dayWeight, isWeekendISO } from '../metrics.js';
 import { scopeCaption } from '../filters.js';
 import { LeaveBanner, scopeCaptionLine } from '../Dashboard.jsx';
 import { RateLine, Sparkline } from '../components/Charts.jsx';
@@ -40,16 +40,18 @@ function teamDaily(rows, team, dates, ctx) {
     const allIds = [...new Set(mates)];
     const byId = new Map(day.map((r) => [r.employeeId, r]));
     for (const id of allIds) {
-      const st = classifyDay(byId.get(id) || { date: d, leaves: [] }, ctx);
-      if (st === 'present' || st === 'missing_checkout') present += 1;
-      if (st === 'present' || st === 'missing_checkout' || st === 'no_record') expected += 1;
+      const rec = byId.get(id) || carryRec(id, d, ctx);
+      const st = classifyDay(rec, ctx);
+      const w = dayWeight(st, rec);
+      present += w.present;
+      expected += w.expected;
     }
     return { date: d, label: d.slice(8, 10), rate: expected ? Math.round((present / expected) * 1000) / 10 : null };
   });
 }
 
 export default function Teams({ scope }) {
-  const { agg, filters, slugToName, teamNames, leaveLoaded, update } = scope;
+  const { agg, filters, slugToName, teamNames, leaveLoaded, leaveActive, update } = scope;
   const stats = useMemo(() => teamAgg(agg.employees), [agg.employees]);
   const selectedSlugs = filters.teams; // null = all
   const noRecordLabel = statusLabel('no_record', leaveLoaded);
@@ -81,7 +83,7 @@ export default function Teams({ scope }) {
 
   return (
     <>
-      {!leaveLoaded && <LeaveBanner />}
+      {!leaveLoaded && !leaveActive && <LeaveBanner />}
       <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Attendance by team</h2>
       {agg.employees.length === 0 ? (
         <EmptyState scope={scope} />
@@ -158,7 +160,7 @@ export function EmptyState({ scope }) {
 
 export function TeamDetail({ scope }) {
   const { teamSlug: slug } = useParams();
-  const { agg, scopeDates, rows, ctx, slugToName, filters, leaveLoaded } = scope;
+  const { agg, scopeDates, rows, ctx, slugToName, filters, leaveLoaded, leaveActive } = scope;
   const name = slugToName.get(slug);
   if (!name) {
     return (
@@ -170,12 +172,12 @@ export function TeamDetail({ scope }) {
   }
   const members = agg.employees.filter((e) => e.team === name);
   const teamRows = rows.filter((r) => r.team === name);
-  const daily = teamDaily(rows, name, scopeDates, ctx).map((d, i) => ({ ...d, label: scope.scopeDates[i] ? scope.scopeDates[i].slice(5) : d.label }));
+  const daily = teamDaily(rows, name, scopeDates, ctx).map((d, i) => ({ ...d, label: scope.scopeDates[i] ? scope.scopeDates[i].slice(5) : d.label })).filter((d) => !isWeekendISO(d.date));
   const expected = members.reduce((s, e) => s + e.expected, 0);
   const present = members.reduce((s, e) => s + e.present, 0);
   return (
     <>
-      {!leaveLoaded && <LeaveBanner />}
+      {!leaveLoaded && !leaveActive && <LeaveBanner />}
       <div style={{ fontSize: 13, color: colors.muted, marginBottom: 8 }}>
         <Link to="/teams" style={{ color: colors.select }}>Teams</Link> / <strong style={{ color: colors.ink }}>{name}</strong>
       </div>

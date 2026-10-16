@@ -6,6 +6,8 @@ import { formatPct, statusLabel, kpiLabels } from '../metrics.js';
 import { scopeCaption } from '../filters.js';
 import { LeaveBanner, scopeCaptionLine } from '../Dashboard.jsx';
 import { RateLine, BreakdownBars, ChartLegend } from '../components/Charts.jsx';
+import StatusLegend from '../components/StatusLegend.jsx';
+import { LEGACY_LEGEND, OVERLAY_LEGEND } from '../statusColors.js';
 
 function Card({ label, value, tone, to, title }) {
   const inner = (
@@ -23,17 +25,27 @@ function Card({ label, value, tone, to, title }) {
 }
 
 export default function Overview({ scope }) {
-  const { agg, daily, filters, slugToName, leaveLoaded, today } = scope;
-  const labels = kpiLabels(leaveLoaded);
-  const noRecordLabel = statusLabel('no_record', leaveLoaded);
+  const { agg, daily, filters, slugToName, leaveLoaded, leaveActive, coverage, today } = scope;
+  const reconciled = leaveLoaded || leaveActive;
+  const labels = kpiLabels(reconciled);
+  const noRecordLabel = statusLabel('no_record', reconciled);
   const distinctSources = [...new Set(scope.rows.map((r) => r.source || 'migrated'))];
+  const through = coverage?.leave_coverage?.through_date || null;
+  const staleDays = through
+    ? Math.floor((Date.now() - new Date(through + 'T00:00:00Z').getTime()) / 86400000)
+    : null;
 
-  const lineData = daily.map((d) => ({ ...d, rate: d.rate }));
-  const barData = daily.map((d) => ({
+  // Charts skip weekends: they are always all-zero (no expected shift),
+  // so they only break the line and pad the bars.
+  const chartDays = daily.filter((d) => !d.weekend);
+  const lineData = chartDays.map((d) => ({ ...d, rate: d.rate }));
+  const barData = chartDays.map((d) => ({
     ...d,
     present: d.present,
     leave: d.leave,
     noRecord: d.noRecord,
+    absent: d.absent,
+    unverified: d.unverified,
     inProgress: d.inProg,
   }));
 
@@ -63,12 +75,29 @@ export default function Overview({ scope }) {
 
   return (
     <>
-      {!leaveLoaded && <LeaveBanner />}
+      {!reconciled && <LeaveBanner />}
+      {leaveActive && (
+        <div style={{
+          border: `1px solid ${staleDays !== null && staleDays > 10 ? '#c58a1b' : colors.line}`,
+          background: staleDays !== null && staleDays > 10 ? '#fbf3dc' : colors.panel,
+          borderRadius: 4, padding: '9px 14px', fontSize: 13, marginBottom: 16, color: colors.ink,
+        }}>
+          Leave data current through <strong>{through}</strong>
+          {staleDays !== null && staleDays > 10 && <> — older than 10 days; HR sends the report weekly</>}.
+          {' '}Days past coverage are <strong>unverified</strong>, never counted absent.
+        </div>
+      )}
       <section style={{ display: 'flex', flexWrap: 'wrap', gap: 0, marginBottom: 8, border: `1px solid ${colors.line}`, borderRadius: 4, overflow: 'hidden', background: colors.panel }}>
         <Card label="Headcount" value={agg.headcount} />
         <Card label="Attendance rate" value={formatPct(agg.attendanceRate)} tone={agg.attendanceRate !== null && agg.attendanceRate < 0.6 ? colors.alert : undefined} />
         <Card label="Avg hours / present day" value={agg.avgHours === null ? '—' : `${agg.avgHours.toFixed(1)}h`} />
         <Card label={labels.count} value={agg.noRecordDays} tone={agg.noRecordDays > 0 ? colors.alert : colors.good} to={`/exceptions?type=no_record`} title="Open filtered exceptions" />
+        {leaveActive && (
+          <Card label="Unauthorized absences" value={agg.absentDays} tone={agg.absentDays > 0 ? colors.alert : colors.good} title="Verified absences with leave data" />
+        )}
+        {leaveActive && (
+          <Card label="Unverified days" value={agg.unverifiedDays} tone={agg.unverifiedDays > 0 ? colors.warn : colors.good} title="Past coverage gaps or unknown codes — never counted absent" />
+        )}
         <Card label="Missing check-outs" value={agg.employees.reduce((s, e) => s + e.missing, 0)} tone={colors.warn} to="/exceptions?type=missing_checkout" title="Open filtered exceptions" />
         <Card label="Off-shift anomalies" value={agg.employees.reduce((s, e) => s + e.offshift, 0)} tone={colors.anomaly} to="/exceptions?type=off_shift" title="Open filtered exceptions" />
         <Card label="No punches in period" value={agg.neverPunchedCount} to="/employees?group=nopunch" title="Open the no-punches group" />
@@ -84,8 +113,8 @@ export default function Overview({ scope }) {
       <section style={{ marginBottom: 36 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Attendance rate by day</h2>
         <div style={{ background: colors.panel, border: `1px solid ${colors.line}`, borderRadius: 4, padding: '16px 20px 4px' }}>
-          {daily.length === 0 ? (
-            <EmptyChart text="No attendance data for this month yet." />
+          {lineData.length === 0 ? (
+            <EmptyChart text="No working days in this range yet." />
           ) : (
             <RateLine data={lineData} />
           )}
@@ -95,18 +124,22 @@ export default function Overview({ scope }) {
       <section style={{ marginBottom: 36 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 14px' }}>Daily breakdown</h2>
         <div style={{ background: colors.panel, border: `1px solid ${colors.line}`, borderRadius: 4, padding: '16px 20px 4px' }}>
-          {daily.length === 0 ? (
-            <EmptyChart text="No attendance data for this month yet." />
+          {barData.length === 0 ? (
+            <EmptyChart text="No working days in this range yet." />
           ) : (
-            <BreakdownBars data={barData} showLeave={leaveLoaded} showInProgress />
+            <BreakdownBars data={barData} showLeave={reconciled} showInProgress showOverlay={leaveActive} />
           )}
         </div>
-        <ChartLegend items={[
-          ['Present', colors.good],
-          ...(leaveLoaded ? [['On leave', '#3b6ea5']] : []),
-          [noRecordLabel, colors.alert],
-          ['In progress', `${colors.good}59`, true],
-        ]} />
+        {leaveActive ? (
+          <StatusLegend statuses={[...OVERLAY_LEGEND, 'no_record', 'in_progress']} leaveLoaded={reconciled} />
+        ) : (
+          <ChartLegend items={[
+            ['Present', colors.good],
+            ...(reconciled ? [['On leave', '#3b6ea5']] : []),
+            [noRecordLabel, colors.alert],
+            ['In progress', `${colors.good}59`, true],
+          ]} />
+        )}
       </section>
 
       <section style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>

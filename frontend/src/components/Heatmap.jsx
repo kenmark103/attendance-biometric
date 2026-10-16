@@ -3,20 +3,10 @@
 // hatch for non-working days, 150-employee cap.
 import React, { useMemo } from 'react';
 import { colors } from '../theme.js';
-import { classifyDay, statusLabel, shortDateISO, day2ISO } from '../metrics.js';
+import { classifyDay, statusLabel, shortDateISO, day2ISO, carryRec } from '../metrics.js';
+import { STATUS_COLORS as FILL } from '../statusColors.js';
 
 const CELL = 18, GAP = 2;
-
-const FILL = {
-  present: colors.good,
-  missing_checkout: '#c58a1b',
-  leave: '#3b6ea5',
-  no_record: colors.alert,
-  in_progress: `${colors.good}59`,
-  pending: 'transparent',
-  weekend: '#d9d9d4',
-  holiday: '#d9d9d4',
-};
 
 export default function AttendanceHeatmap({ employees, rows, dates, ctx, scope, groupByTeam = false }) {
   const { leaveLoaded } = ctx;
@@ -33,7 +23,7 @@ export default function AttendanceHeatmap({ employees, rows, dates, ctx, scope, 
       capped,
       truncated: ordered.length - capped.length,
       cells: capped.map((e) => dates.map((d) => {
-        const rec = (byEmp.get(e.id) || new Map()).get(d) || { date: d, leaves: [] };
+        const rec = (byEmp.get(e.id) || new Map()).get(d) || carryRec(e.id, d, ctx);
         return { rec, status: classifyDay(rec, ctx) };
       })),
     };

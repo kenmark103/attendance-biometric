@@ -33,7 +33,7 @@ export function RateLine({ data, height = 200 }) {
 }
 
 // Stacked daily breakdown. Weekend/holiday columns are all-zero => empty.
-export function BreakdownBars({ data, showLeave, showInProgress, height = 200 }) {
+export function BreakdownBars({ data, showLeave, showInProgress, showOverlay, height = 200 }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 4, right: 8, left: -12, bottom: 4 }}>
@@ -44,6 +44,8 @@ export function BreakdownBars({ data, showLeave, showInProgress, height = 200 })
         <Bar dataKey="present" name="Present" stackId="a" fill={colors.good} />
         {showLeave && <Bar dataKey="leave" name="On leave" stackId="a" fill="#3b6ea5" />}
         <Bar dataKey="noRecord" name="No record" stackId="a" fill={colors.alert} />
+        {showOverlay && <Bar dataKey="absent" name="Absent" stackId="a" fill={colors.alert} />}
+        {showOverlay && <Bar dataKey="unverified" name="Unverified" stackId="a" fill="#d8b4a0" />}
         {showInProgress && <Bar dataKey="inProgress" name="In progress" stackId="a" fill={`${colors.good}59`} radius={[2, 2, 0, 0]} />}
         {!showInProgress && <Bar dataKey="noRecord" name="x" stackId="a" fill="transparent" hide />}
       </BarChart>

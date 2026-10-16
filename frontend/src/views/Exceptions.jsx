@@ -2,7 +2,7 @@
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { colors } from '../theme.js';
-import { classifyDay, punchCount, statusLabel, toCSV, shortDateISO } from '../metrics.js';
+import { classifyDay, punchCount, hasPunch, statusLabel, toCSV, shortDateISO, carryRec } from '../metrics.js';
 import { LeaveBanner } from '../Dashboard.jsx';
 import { EmptyState } from './Teams.jsx';
 
@@ -10,8 +10,9 @@ const th = { textAlign: 'left', padding: '10px 16px', color: colors.muted, fontW
 const td = { padding: '9px 16px', fontSize: 13 };
 const PAGE = 100;
 
-const TYPES = ['all', 'no_record', 'missing_checkout', 'off_shift', 'late_in', 'early_out', 'unmatched_leave'];
-const TYPE_LABEL = { all: 'All', no_record: 'No record', missing_checkout: 'Missing check-out', off_shift: 'Off-shift', late_in: 'Late in', early_out: 'Early out', unmatched_leave: 'Unmatched leave' };
+const TYPES = ['all', 'no_record', 'missing_checkout', 'off_shift', 'late_in', 'early_out', 'unmatched_leave', 'leave_conflict', 'unverified_day'];
+const TYPE_LABEL = { all: 'All', no_record: 'No record', missing_checkout: 'Missing check-out', off_shift: 'Off-shift', late_in: 'Late in', early_out: 'Early out', unmatched_leave: 'Unmatched leave', leave_conflict: 'Leave conflict', unverified_day: 'Unverified day' };
+const OVERLAY_ONLY = new Set(['leave_conflict', 'unverified_day']);
 
 function buildEntries(rows, scopeDates, neverIds, ctx) {
   const byEmp = new Map();
@@ -24,11 +25,14 @@ function buildEntries(rows, scopeDates, neverIds, ctx) {
   const hasEarly = rows.some((r) => r.early);
   for (const { rec: info, byDate } of byEmp.values()) {
     for (const d of scopeDates) {
-      const rec = byDate.get(d) || { date: d, leaves: [] };
+      const rec = byDate.get(d) || carryRec(info.employeeId, d, ctx);
       const st = classifyDay(rec, ctx);
       const base = { date: d, employeeId: info.employeeId, name: info.name, team: info.team, rec };
       if (st === 'no_record' && !neverIds.has(info.employeeId)) {
         entries.push({ ...base, type: 'no_record', detail: 'No punch, no leave' });
+      }
+      if (st === 'absent' && !neverIds.has(info.employeeId)) {
+        entries.push({ ...base, type: 'no_record', detail: 'Verified absence — no punch, working day in leave data' });
       }
       if (st === 'missing_checkout') {
         entries.push({ ...base, type: 'missing_checkout', detail: `In ${rec.checkIn || rec.checkOut || '—'}, no check-out` });
@@ -41,6 +45,13 @@ function buildEntries(rows, scopeDates, neverIds, ctx) {
       if (ctx.leaveLoaded && (rec.leaves || []).some((l) => (l.status || 'approved') === 'approved') && punchCount(rec) > 0) {
         entries.push({ ...base, type: 'unmatched_leave', detail: `On leave but punched ${rec.checkIn || ''}–${rec.checkOut || ''}` });
       }
+      if (st === 'leave_conflict') {
+        const how = hasPunch(rec) ? `punched ${rec.checkIn || ''}–${rec.checkOut || ''}` : 'Zoho presence recorded';
+        entries.push({ ...base, type: 'leave_conflict', detail: `${rec.leaveType || 'On leave'} day, but ${how}` });
+      }
+      if (st === 'absent_unverified' || st === 'unverified') {
+        entries.push({ ...base, type: 'unverified_day', detail: 'Past leave coverage gap or unknown code — never counted absent' });
+      }
     }
   }
   entries.sort((a, b) => b.date.localeCompare(a.date) || a.name.localeCompare(b.name));
@@ -48,7 +59,7 @@ function buildEntries(rows, scopeDates, neverIds, ctx) {
 }
 
 export default function Exceptions({ scope }) {
-  const { rows, scopeDates, agg, ctx, leaveLoaded, update } = scope;
+  const { rows, scopeDates, agg, ctx, leaveLoaded, leaveActive, update } = scope;
   const [page, setPage] = useState(0);
   const neverIds = useMemo(() => new Set(agg.employees.filter((e) => e.neverPunched).map((e) => e.id)), [agg.employees]);
   const { entries, hasLate, hasEarly } = useMemo(
@@ -79,7 +90,8 @@ export default function Exceptions({ scope }) {
 
   const chip = (t) => {
     const disabled = t === 'unmatched_leave' && !leaveLoaded;
-    const hidden = (t === 'late_in' && !hasLate) || (t === 'early_out' && !hasEarly);
+    const hidden = (t === 'late_in' && !hasLate) || (t === 'early_out' && !hasEarly)
+      || (OVERLAY_ONLY.has(t) && !ctx.leaveActive);
     if (hidden) return null;
     const active = type === t;
     const label = t === 'no_record' ? statusLabel('no_record', leaveLoaded) : TYPE_LABEL[t];
@@ -98,8 +110,8 @@ export default function Exceptions({ scope }) {
 
   return (
     <>
-      {!leaveLoaded && <LeaveBanner />}
-      {!leaveLoaded && (
+      {!leaveLoaded && !leaveActive && <LeaveBanner />}
+      {!leaveLoaded && !leaveActive && (
         <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, background: colors.panel, padding: '12px 16px', fontSize: 13, marginBottom: 16, color: colors.muted }}>
           Leave reconciliation arrives with the Zoho leave import. Until then, no-record days cannot be separated from approved leave.
         </div>

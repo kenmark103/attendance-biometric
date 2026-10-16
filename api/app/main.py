@@ -17,6 +17,7 @@ from app.auth.microsoft import router as microsoft_router
 from app.core import settings
 from app.routers.attendance import router as attendance_router
 from app.routers.ingestion import router as ingestion_router
+from app.routers.leave_import import router as leave_import_router
 from app.routers.wfh import router as wfh_router
 
 
@@ -24,6 +25,17 @@ from app.routers.wfh import router as wfh_router
 async def lifespan(app: FastAPI):
     settings.validate_startup()
     ensure_bootstrap_admin()
+    try:
+        from app.core.db import get_conn
+        from app.leave.janitor import run_janitor
+        conn = get_conn()
+        try:
+            run_janitor(conn)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # janitor must never break startup
+        print(f"leave janitor at startup skipped: {type(exc).__name__}: {exc}")
     yield
 
 
@@ -36,6 +48,7 @@ app.include_router(microsoft_router)
 app.include_router(admin_router)
 app.include_router(attendance_router)
 app.include_router(ingestion_router)
+app.include_router(leave_import_router)
 app.include_router(wfh_router)
 
 

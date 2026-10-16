@@ -33,6 +33,27 @@ DATABASE_URL = _get("DATABASE_URL", "postgresql://attendance:attendance@db:5432/
 # Default true once auth lands — set explicitly to "false" for open dev.
 AUTH_REQUIRED = _get("AUTH_REQUIRED", "true").lower() == "true"
 
+# --- Leave ingestion (spec §§3, 9, 12) ------------------------------------
+# EXPECTED_DEPARTMENT_LABELS is ';'-separated (the label itself contains a
+# comma). TRUST_ZOHO_PRESENCE gates `present_zoho_only`; LEAVE_SOURCE_PRIORITY
+# orders 'api' over 'xls' when both exist; LEAVE_TYPE_DETAIL_ROLES gates
+# sick/maternity/paternity detail (default admin); MIN_PUNCH_MINUTES matches
+# the repo's punch definition (default 0 = any punch counts).
+EXPECTED_DEPARTMENT_LABELS = [
+    s.strip() for s in _get(
+        "EXPECTED_DEPARTMENT_LABELS",
+        "GBS- ENGINEERING CENTRE,Engineering Centre").split(";") if s.strip()
+]
+TRUST_ZOHO_PRESENCE = _get("TRUST_ZOHO_PRESENCE", "true").lower() == "true"
+LEAVE_SOURCE_PRIORITY = [
+    s.strip() for s in _get("LEAVE_SOURCE_PRIORITY", "api,xls").split(",") if s.strip()
+]
+LEAVE_TYPE_DETAIL_ROLES = [
+    s.strip() for s in _get("LEAVE_TYPE_DETAIL_ROLES", "admin").split(",") if s.strip()
+]
+MIN_PUNCH_MINUTES = int(_get("MIN_PUNCH_MINUTES", "0") or 0)
+LEAVE_UPLOAD_MAX_MB = int(_get("LEAVE_UPLOAD_MAX_MB", "10") or 10)
+
 
 def entra_configured() -> bool:
     return bool(ENTRA_TENANT_ID and ENTRA_CLIENT_ID and ENTRA_CLIENT_SECRET)

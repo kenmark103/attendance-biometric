@@ -4,7 +4,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { colors } from '../theme.js';
 import {
-  statusLabel, classifyDay, outSuffix, toCSV, shortDateISO, day3ISO,
+  statusLabel, classifyDay, outSuffix, toCSV, shortDateISO, day3ISO, carryRec,
 } from '../metrics.js';
 import { LeaveBanner } from '../Dashboard.jsx';
 import AttendanceHeatmap from '../components/Heatmap.jsx';
@@ -28,7 +28,7 @@ function applySort(list, sort) {
 
 export default function Employees({ scope }) {
   const { employeeId } = useParams();
-  const { agg, filters, scopeDates, rows, ctx, leaveLoaded, update } = scope;
+  const { agg, filters, scopeDates, rows, ctx, leaveLoaded, leaveActive, isAdmin, update } = scope;
   const noRecordLabel = statusLabel('no_record', leaveLoaded);
 
   const [page, setPage] = useState(0);
@@ -37,10 +37,26 @@ export default function Employees({ scope }) {
   useEffect(() => { if (filters.group === 'nopunch') setGroupOpen(true); }, [filters.group]);
 
   const q = filters.q.toLowerCase();
+  // Leave-type filter (admin only; other roles see a generic 'On leave' and
+  // get no breakdown). Options come from the in-scope rows themselves.
+  const leaveTypeOptions = useMemo(() => [...new Set(
+    rows.map((r) => r.leaveType).filter((t) => t && t !== 'On leave'),
+  )].sort(), [rows]);
+  const [leaveType, setLeaveType] = useState('');
+  useEffect(() => { setPage(0); }, [leaveType]);
+  const leaveTypeIds = useMemo(() => {
+    if (!leaveType) return null;
+    const ids = new Set();
+    for (const r of rows) if (r.leaveType === leaveType) ids.add(r.employeeId);
+    return ids;
+  }, [rows, leaveType]);
+  const inLeaveType = (e) => !leaveTypeIds || leaveTypeIds.has(e.id);
   const main = agg.employees.filter((e) => !e.neverPunched)
-    .filter((e) => !q || e.name.toLowerCase().includes(q) || e.id.startsWith(filters.q));
+    .filter((e) => !q || e.name.toLowerCase().includes(q) || e.id.startsWith(filters.q))
+    .filter(inLeaveType);
   const punched = agg.employees.filter((e) => e.neverPunched)
-    .filter((e) => !q || e.name.toLowerCase().includes(q) || e.id.startsWith(filters.q));
+    .filter((e) => !q || e.name.toLowerCase().includes(q) || e.id.startsWith(filters.q))
+    .filter(inLeaveType);
   const sorted = applySort(main, filters.sort);
   const pages = Math.max(1, Math.ceil(sorted.length / PAGE));
   const cur = Math.min(page, pages - 1);
@@ -66,7 +82,7 @@ export default function Employees({ scope }) {
 
   return (
     <>
-      {!leaveLoaded && <LeaveBanner />}
+      {!leaveLoaded && !leaveActive && <LeaveBanner />}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: wide ? 'nowrap' : 'wrap' }}>
         <section style={{ flex: 1, minWidth: wide ? 640 : 0 }}>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -88,6 +104,14 @@ export default function Employees({ scope }) {
                 </button>
               ))}
             </div>
+            {isAdmin && leaveTypeOptions.length > 0 && (
+              <select value={leaveType} onChange={(e) => setLeaveType(e.target.value)}
+                title="Filter by leave type (admin only)"
+                style={{ fontFamily: 'inherit', fontSize: 12.5, padding: '7px 10px', border: `1px solid ${colors.line}`, borderRadius: 4, background: colors.panel, color: colors.ink }}>
+                <option value="">All leave types</option>
+                {leaveTypeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            )}
           </div>
 
           {filters.view === 'heatmap' ? (
@@ -186,10 +210,11 @@ function pageBtn(disabled) {
 }
 
 function Drawer({ employee: e, scope, overlay }) {
-  const { scopeDates, rows, ctx, leaveLoaded, filters, update } = scope;
+  const { scopeDates, rows, ctx, leaveLoaded, leaveActive, filters, update } = scope;
+  const reconciled = leaveLoaded || leaveActive;
   const byDate = new Map(rows.filter((r) => r.employeeId === e.id).map((r) => [r.date, r]));
   const dayRows = scopeDates.map((d) => {
-    const rec = byDate.get(d) || { date: d, leaves: [] };
+    const rec = byDate.get(d) || carryRec(e.id, d, ctx);
     return { date: d, rec, status: classifyDay(rec, ctx) };
   });
 
@@ -237,6 +262,14 @@ function Drawer({ employee: e, scope, overlay }) {
         <tbody>
           {dayRows.map(({ date, rec, status }) => {
             const muted = status === 'weekend' || status === 'holiday';
+            const badges = [];
+            if (status === 'leave_conflict') badges.push('worked on leave day');
+            if (status === 'present_zoho_only') badges.push('Zoho only');
+            if (status === 'half_leave') badges.push(`half day${rec.leaveFraction ? ` (${rec.leaveFraction})` : ''}`);
+            if (rec.punchWhileNotEmployed) badges.push('punched while not employed');
+            if (rec.carriedForward) badges.push('carried');
+            const typeSuffix = (status === 'leave' || status === 'half_leave')
+              && rec.leaveType && rec.leaveType !== 'On leave' ? ` · ${rec.leaveType}` : '';
             return (
               <tr key={date} id={`day-${date}`}
                 ref={(el) => { if (el && filters.day === date) el.scrollIntoView({ block: 'nearest' }); }}
@@ -247,7 +280,15 @@ function Drawer({ employee: e, scope, overlay }) {
                 }}>
                 <td style={td}>{day3ISO(date)}</td>
                 <td style={{ ...td, color: colors.muted }}>{shortDateISO(date)}</td>
-                <td style={{ ...td, color: muted ? colors.muted : colors.ink }}>{statusLabel(status, leaveLoaded)}</td>
+                <td style={{ ...td, color: muted ? colors.muted : colors.ink }}>
+                  {statusLabel(status, reconciled)}{typeSuffix}
+                  {badges.map((b) => (
+                    <span key={b} style={{
+                      display: 'inline-block', fontSize: 11, marginLeft: 6, padding: '1px 7px',
+                      borderRadius: 10, border: `1px solid ${colors.line}`, color: colors.muted,
+                    }}>{b}</span>
+                  ))}
+                </td>
                 <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec.checkIn || '—'}</td>
                 <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec.checkOut ? rec.checkOut + outSuffix(rec) : '—'}</td>
                 <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{rec.hours || '—'}</td>

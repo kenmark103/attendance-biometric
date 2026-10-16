@@ -50,3 +50,21 @@ class WfhIn(BaseModel):
     employee_id: str
     date: date
     reason: Optional[str] = None
+
+
+class LeaveCommitIn(BaseModel):
+    sheets: Optional[List[str]] = None
+    confirm_large_change: bool = False
+    acknowledge_department: bool = False
+    idempotency_key: Optional[str] = None
+
+
+class LeaveTypeIn(BaseModel):
+    code: str
+    label: Optional[str] = None
+    kind: str = "unknown"
+    leave_group: Optional[str] = None
+    paid: Optional[bool] = None
+    counts_as_present: Optional[bool] = None
+    aliases: Optional[List[str]] = None
+    sensitive: Optional[bool] = None

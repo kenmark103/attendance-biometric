@@ -1,5 +1,9 @@
 .env
 data/*.json
+# HR leave reports contain PII — never commit (leave-ingestion spec §0).
+*.xls
+*.xlsx
+data/.leave_uploads/
 __pycache__/
 *.pyc
 frontend/node_modules/
