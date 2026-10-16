@@ -1,5 +1,8 @@
 .env
-data/*.json
+# Nothing under data/ is ever committed (biometric/HR data is PII).
+# The folder travels with the repo only as an empty placeholder.
+data/*
+!data/.gitkeep
 # HR leave reports contain PII — never commit (leave-ingestion spec §0).
 *.xls
 *.xlsx
