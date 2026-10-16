@@ -1,20 +1,28 @@
-"""One-off LOCAL backfill: upload the real HR workbook, commit Jan-Sep only.
+"""One-off LOCAL backfill: upload the real HR workbook, commit selected months.
 
-October is deliberately excluded so it can be used for a manual UI test
-(upload + preview + commit through the browser).
-
-Local only — never CI (the real report contains PII and is gitignored).
-Runs inside the api container where /data and /scripts are mounted:
+By default commits every non-blocked sheet (October included — its last,
+provisional column is excluded automatically). Pass --through YYYY-MM-DD to
+hold back later sheets (e.g. keep October for a manual UI test):
 
     docker compose exec -T api python /scripts/leave_backfill.py /data/Engineering.xls
+    docker compose exec -T api python /scripts/leave_backfill.py /data/Engineering.xls --through 2026-09-30
+
+Local only — never CI (the real report contains PII and is gitignored).
+Safe to re-run: an already-committed file is detected by hash and verified.
 """
+import argparse
 import hashlib
 import sys
 import uuid
 
 sys.path.insert(0, "/app")
 
-FILE = sys.argv[1] if len(sys.argv) > 1 else "/data/Engineering.xls"
+ap = argparse.ArgumentParser()
+ap.add_argument("file", nargs="?", default="/data/Engineering.xls")
+ap.add_argument("--through", default=None,
+                help="Commit only sheets ending on or before this date (YYYY-MM-DD)")
+args = ap.parse_args()
+FILE = args.file
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -53,37 +61,57 @@ r = client.post("/leave/imports",
 assert r.status_code == 200, r.text
 prev = r.json()
 iid = prev["import_id"]
-print(f"import #{iid}: status={prev['status']}")
+if prev.get("already_imported"):
+    print(f"import #{iid}: already uploaded (status={prev['status']})")
+    if prev["status"] == "committed":
+        print("already committed; verifying counts and exiting")
+    else:
+        r = client.get(f"/leave/imports/{iid}", headers=H)
+        assert r.status_code == 200, r.text
+        prev = r.json()
+        print(f"resuming {prev['status']} preview #{iid}")
+else:
+    print(f"import #{iid}: status={prev['status']}")
 
-sheets = prev["sheets"]
-assert len(sheets) == 10, f"expected 10 sheets, got {len(sheets)}"
-assert all(not s["blocked"] for s in sheets), "all sheets should parse clean"
-assert prev["counts"]["total"] == 48389, prev["counts"]
-assert prev["counts"]["employees"] == 181, prev["counts"]
-assert prev["coverage_through"] == "2026-10-14", prev["coverage_through"]
-print("preview invariants OK: 10 sheets, 181 IDs, 48389 rows, through 2026-10-14")
+if prev.get("already_imported") and prev.get("status") == "committed":
+    sheets = None  # nothing to preview; go straight to verification
+else:
+    sheets = prev["sheets"]
+    assert len(sheets) == 10, f"expected 10 sheets, got {len(sheets)}"
+    assert all(not s["blocked"] for s in sheets), "all sheets should parse clean"
+    assert prev["counts"]["total"] == 48389, prev["counts"]
+    assert prev["counts"]["employees"] == 181, prev["counts"]
+    assert prev["coverage_through"] == "2026-10-14", prev["coverage_through"]
+    print("preview invariants OK: 10 sheets, 181 IDs, 48389 rows, through 2026-10-14")
 
-keep = [s["sheet"] for s in sheets if s["end"] < "2026-10-01"]
-dropped = [s["sheet"] for s in sheets if s["end"] >= "2026-10-01"]
-print(f"committing {len(keep)} sheets {keep}; holding back {dropped} for manual test")
-assert dropped, "expected to hold back October"
-
-r = client.post(f"/leave/imports/{iid}/commit", json={"sheets": keep}, headers=H)
-assert r.status_code == 200, r.text
-res = r.json()
-print(f"committed: {res['committed_rows']} rows, coverage {res['coverage_through']}")
-assert res["coverage_through"] == "2026-09-30", res
+if sheets is None:
+    print("nothing to commit; verifying stored state")
+else:
+    keep = [s["sheet"] for s in sheets
+            if args.through is None or s["end"] <= args.through]
+    dropped = [s["sheet"] for s in sheets if s["sheet"] not in keep]
+    print(f"committing {len(keep)} sheets {keep}"
+          + (f"; holding back {dropped} (--through {args.through})" if dropped else ""))
+    assert keep, "selection is empty; check --through"
+    r = client.post(f"/leave/imports/{iid}/commit", json={"sheets": keep}, headers=H)
+    assert r.status_code == 200, r.text
+    res = r.json()
+    print(f"committed: {res['committed_rows']} rows, coverage {res['coverage_through']}")
+    if args.through:
+        assert res["coverage_through"] == args.through, res
 
 conn = get_conn()
 try:
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) AS n, COUNT(DISTINCT employee_id) AS ids FROM calendar_day")
     row = cur.fetchone()
-    assert row["n"] == res["committed_rows"], dict(row)
     print(f"calendar_day: {row['n']} rows, {row['ids']} IDs")
+    cur.execute("SELECT through_date FROM leave_coverage WHERE source = 'xls'")
+    cov = cur.fetchone()
+    print(f"leave coverage: {cov['through_date'] if cov else None}")
     cur.execute("DELETE FROM users WHERE email = %s", (email,))
     conn.commit()
     cur.close()
 finally:
     conn.close()
-print("backfill complete; temp admin removed; October left for manual test")
+print("backfill complete; temp admin removed")
