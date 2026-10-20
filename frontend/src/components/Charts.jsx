@@ -7,28 +7,52 @@ import { colors } from '../theme.js';
 
 const tipStyle = { border: `1px solid ${colors.line}`, borderRadius: 4, fontSize: 12.5 };
 
-// Single-series attendance line. Null rates are gaps (connectNulls false),
-// so weekends/holidays/today break the line instead of plotting 0%.
-export function RateLine({ data, height = 200 }) {
+function RateDot({ cx, cy, payload }) {
+  if (payload.rate === null || payload.rate === undefined) return null;
+  const provisional = payload.state === 'provisional';
+  return <circle cx={cx} cy={cy} r={3} fill={provisional ? '#fff' : colors.good} stroke={colors.good} strokeWidth={provisional ? 2 : 0} />;
+}
+
+function RateTip({ active, payload }) {
+  if (!active || !payload || !payload.length) return null;
+  const p = payload[0].payload;
   return (
-    <ResponsiveContainer width="100%" height={height}>
-      <LineChart data={data} margin={{ top: 4, right: 16, left: -12, bottom: 4 }}>
-        <CartesianGrid strokeDasharray="2 4" stroke={colors.line} vertical={false} />
-        <XAxis dataKey="label" tick={{ fontSize: 12, fill: colors.muted }} axisLine={{ stroke: colors.line }} tickLine={false} interval="preserveStartEnd" />
-        <YAxis tick={{ fontSize: 12, fill: colors.muted }} axisLine={false} tickLine={false} domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} label={{ value: '% of expected', angle: -90, position: 'insideLeft', fontSize: 11, fill: colors.muted }} />
-        <Tooltip
-          contentStyle={tipStyle}
-          formatter={(value, name, props) => {
-            const p = props?.payload;
-            if (!p) return [value, name];
-            if (name === 'rate') return [`${value}% (${p.present}/${p.expected} present)`, 'Attendance'];
-            return [value, name];
-          }}
-          labelFormatter={(label, payload) => payload?.[0]?.payload?.full || label}
-        />
-        <Line type="monotone" dataKey="rate" name="rate" stroke={colors.good} strokeWidth={2} dot={{ r: 3, fill: colors.good }} connectNulls={false} />
-      </LineChart>
-    </ResponsiveContainer>
+    <div style={{ ...tipStyle, background: '#fff', padding: '8px 10px' }}>
+      <div style={{ fontWeight: 600, marginBottom: 2 }}>{p.full || p.label}</div>
+      <div>{p.rate === null || p.rate === undefined ? 'No data' : `${p.rate}% (${p.present}/${p.expected} present)`}</div>
+      {p.state === 'provisional' && <div style={{ color: colors.muted }}>Provisional: leave data not loaded</div>}
+      {p.state === 'no_data' && <div style={{ color: colors.muted }}>No data — no biometric records</div>}
+    </div>
+  );
+}
+
+// Single-series attendance line. Null rates are gaps (connectNulls false),
+// so weekends/holidays/no-data days break the line instead of plotting 0%.
+// Provisional days (leave data not yet loaded) get hollow markers and are
+// overlaid with a dashed segment.
+export function RateLine({ data, height = 200 }) {
+  const hasProvisional = data.some((d) => d.state === 'provisional');
+  return (
+    <>
+      <ResponsiveContainer width="100%" height={height}>
+        <LineChart data={data} margin={{ top: 4, right: 16, left: -12, bottom: 4 }}>
+          <CartesianGrid strokeDasharray="2 4" stroke={colors.line} vertical={false} />
+          <XAxis dataKey="label" tick={{ fontSize: 12, fill: colors.muted }} axisLine={{ stroke: colors.line }} tickLine={false} interval="preserveStartEnd" />
+          <YAxis tick={{ fontSize: 12, fill: colors.muted }} axisLine={false} tickLine={false} domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} label={{ value: '% of expected', angle: -90, position: 'insideLeft', fontSize: 11, fill: colors.muted }} />
+          <Tooltip content={<RateTip />} />
+          <Line type="monotone" dataKey="rate" name="rate" stroke={colors.good} strokeWidth={2} dot={<RateDot />} activeDot={{ r: 4 }} connectNulls={false} />
+          {hasProvisional && (
+            <Line type="monotone" dataKey="prov" name="prov" stroke={colors.good} strokeDasharray="4 3" strokeWidth={2} dot={{ r: 3, fill: '#fff', stroke: colors.good, strokeWidth: 2 }} connectNulls={false} legendType="none" activeDot={false} />
+          )}
+        </LineChart>
+      </ResponsiveContainer>
+      {hasProvisional && (
+        <div style={{ display: 'flex', gap: 14, fontSize: 12, color: colors.muted, padding: '2px 4px 8px', flexWrap: 'wrap' }}>
+          <span><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 5, background: colors.good, marginRight: 5 }} />Actual</span>
+          <span><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 5, background: '#fff', border: `2px solid ${colors.good}`, marginRight: 5 }} />Provisional (leave data not loaded)</span>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -43,7 +67,7 @@ export function BreakdownBars({ data, showLeave, showInProgress, showOverlay, he
         <Tooltip contentStyle={tipStyle} labelFormatter={(label, payload) => payload?.[0]?.payload?.full || label} />
         <Bar dataKey="present" name="Present" stackId="a" fill={colors.good} />
         {showLeave && <Bar dataKey="leave" name="On leave" stackId="a" fill="#3b6ea5" />}
-        <Bar dataKey="noRecord" name="No record" stackId="a" fill={colors.alert} />
+        {!showOverlay && <Bar dataKey="noRecord" name="No record" stackId="a" fill={colors.alert} />}
         {showOverlay && <Bar dataKey="absent" name="Absent" stackId="a" fill={colors.alert} />}
         {showOverlay && <Bar dataKey="unverified" name="Unverified" stackId="a" fill="#d8b4a0" />}
         {showInProgress && <Bar dataKey="inProgress" name="In progress" stackId="a" fill={`${colors.good}59`} radius={[2, 2, 0, 0]} />}

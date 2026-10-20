@@ -17,6 +17,7 @@ export const STATUS_COLORS = {
   not_employed: '#e8e8e4',
   in_progress: `${colors.good}59`,
   pending: 'transparent',
+  no_data: '#eae7e0',
   weekend: '#d9d9d4',
   worked_weekend: '#b9c4b1',
   holiday: '#d9d9d4',

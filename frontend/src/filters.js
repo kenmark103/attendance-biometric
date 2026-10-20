@@ -82,10 +82,11 @@ export function parseFilters(search, months, slugToName, today) {
     teams = slugs; // empty array = select-at-least-one enforced by UI, never persisted empty
     if (!slugs.length) teams = null;
   }
+  const rawView = (p.get('view') || '').toLowerCase();
   return {
     month, range, day, shift, teams,
     nopunch: p.get('nopunch') === 'exclude',
-    view: p.get('view') === 'heatmap' ? 'heatmap' : 'list',
+    view: ['heatmap', 'roster'].includes(rawView) ? rawView : 'list',
     q: p.get('q') || '',
     type: p.get('type') || 'all',
     sort: p.get('sort') || '',

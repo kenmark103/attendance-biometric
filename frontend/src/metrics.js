@@ -319,8 +319,6 @@ export function aggregate(rows, dates, ctx, roster = []) {
       overtime: Math.round(overtime * 10) / 10,
       late, early, offshift, biometricDays: biometric,
       neverPunched: !everPunchedWorkingPast,
-      attendanceRate: expected ? present / expected : null,
-      noRecordRate: expected ? noRecord / expected : null,
     };
   });
 
@@ -353,8 +351,6 @@ export function aggregate(rows, dates, ctx, roster = []) {
     hoursSum: Math.round(hoursSum * 10) / 10,
     avgHours: hoursDays ? Math.round((hoursSum / hoursDays) * 10) / 10 : null,
     biometricDays,
-    attendanceRate: expectedDays ? presentDays / expectedDays : null,
-    noRecordRate: expectedDays ? noRecordDays / expectedDays : null,
   };
 }
 
@@ -362,6 +358,78 @@ export function formatPct(x) {
   if (x === null || x === undefined || Number.isNaN(x)) return '—';
   const v = Math.round(x * 1000) / 10;
   return `${Number.isInteger(v) ? v : v.toFixed(1)}%`;
+}
+
+// --- backend metrics adapter --------------------------------------------------
+// The backend (/dashboard/metrics) is the single source of truth for statuses
+// and rates. This maps its payload to the shapes the views already consume.
+// No rate is recomputed here: attendance_rate is passed through verbatim
+// (as a fraction) and only scaled to a percentage for the chart axis.
+const EMPTY_METRICS = {
+  employees: [], daily: [], teams: [], headcount: 0,
+  attendanceRate: null, isProvisional: false, provisionalDays: 0,
+  noDataDays: 0, presentDays: 0, onLeaveDays: 0, absentDays: 0,
+  unverifiedDays: 0, leaveConflictDays: 0, missingCheckouts: 0,
+  neverPunchedCount: 0, avgHours: null, biometricDays: 0,
+};
+
+export function adaptMetrics(api) {
+  if (!api) return null;
+  const s = api.summary || {};
+  const employees = (api.employees || []).map((e) => ({
+    id: e.id, name: e.name, team: e.team || 'Unassigned', shift: e.shift,
+    present: e.present, expected: e.expected, leave: e.on_leave,
+    noRecord: e.no_record, absent: e.absent, unverifiedCount: e.unverified,
+    missing: e.missing, conflicts: e.leave_conflict,
+    neverPunched: !!e.never_punched,
+    avgHours: e.avg_hours ?? 0, hours: e.hours, overtime: e.overtime,
+    late: e.late, early: e.early, biometricDays: e.biometric_days,
+    attendanceRate: e.attendance_rate, days: e.days,
+  }));
+  const daily = (api.daily || []).map((d) => {
+    const c = d.status_counts || {};
+    const present = c.present || 0, onLeave = c.on_leave || 0;
+    const absent = c.absent || 0, unverified = c.unverified || 0;
+    return {
+      date: d.date, state: d.state,
+      rate: d.attendance_rate === null || d.attendance_rate === undefined
+        ? null : Math.round(d.attendance_rate * 1000) / 10,
+      present, leave: onLeave, absent, unverified,
+      expected: present + onLeave + absent + unverified,
+      noRecord: absent + unverified, inProgress: 0, weekend: false,
+    };
+  });
+  const teams = (api.teams || []).map((t) => {
+    const expected = (t.present_days || 0) + (t.on_leave_days || 0)
+      + (t.absent_days || 0) + (t.unverified_days || 0);
+    return {
+      team: t.team, headcount: t.headcount, rate: t.attendance_rate,
+      noRecordRate: null, present: t.present_days, expected,
+      noRecord: (t.absent_days || 0) + (t.unverified_days || 0),
+      small: !!t.small, missing: t.missing_checkouts,
+      neverPunched: t.no_punch_in_period, avgHours: t.avg_hours,
+      isProvisional: !!t.is_provisional, provisionalDays: t.provisional_days,
+      noDataDays: t.no_data_days, daily: t.daily,
+    };
+  });
+  return {
+    ...EMPTY_METRICS,
+    employees, daily, teams,
+    headcount: s.headcount ?? 0,
+    attendanceRate: s.attendance_rate ?? null,
+    isProvisional: !!s.is_provisional,
+    provisionalDays: s.provisional_days || 0,
+    noDataDays: s.no_data_days || 0,
+    presentDays: s.present_days || 0,
+    onLeaveDays: s.on_leave_days || 0,
+    absentDays: s.absent_days || 0,
+    unverifiedDays: s.unverified_days || 0,
+    leaveConflictDays: s.leave_conflict_days || 0,
+    missingCheckouts: s.missing_checkouts || 0,
+    neverPunchedCount: s.no_punch_in_period || 0,
+    avgHours: s.avg_hours ?? null,
+    biometricDays: s.biometric_days || 0,
+  };
 }
 
 // --- slugs --------------------------------------------------------------------

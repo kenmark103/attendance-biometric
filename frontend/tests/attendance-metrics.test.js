@@ -26,8 +26,7 @@ test('1: Oct 3 and Oct 4 are weekend for everyone, excluded from denominators', 
   }
   const agg = aggregate([rec('1', '2026-10-01', { checkIn: '09:00', checkOut: '17:00', present: true, hours: 8 })], ['2026-10-03', '2026-10-04'], CTX);
   assert.equal(agg.expectedDays, 0);
-  assert.equal(agg.attendanceRate, null);
-  assert.equal(formatPct(agg.attendanceRate), '—');
+  assert.equal(formatPct(null), '—');
 });
 
 test('2: Martha (13537) full-week statuses and rates', () => {
@@ -55,9 +54,7 @@ test('2: Martha (13537) full-week statuses and rates', () => {
   const m = agg.employees[0];
   assert.equal(m.present, 2);
   assert.equal(m.expected, 5);
-  assert.equal(agg.attendanceRate, 0.4);
-  assert.equal(agg.noRecordRate, 0.6);
-  assert.equal(formatPct(agg.attendanceRate), '40%');
+  assert.equal(m.noRecord, 3);
   assert.equal(m.avgHours, 5.3);
 });
 
@@ -103,15 +100,16 @@ test('7: 2-member team, one present one absent => 50%, small team', () => {
   ];
   const agg = aggregate(rows, ['2026-10-06', '2026-10-07'], CTX,
     [{ id: 'b', name: 'B', team: 'Test' }]);
-  assert.equal(agg.attendanceRate, 0.5);
+  assert.equal(agg.presentDays, 2);
+  assert.equal(agg.expectedDays, 4);
   assert.equal(agg.headcount, 2);
   assert.ok(agg.headcount < 5); // small-team marker threshold
 });
 
-test('8: empty employee set gives null rates rendered as em dash', () => {
+test('8: empty employee set gives no expected days rendered as em dash', () => {
   const agg = aggregate([], ['2026-10-06'], CTX);
-  assert.equal(agg.attendanceRate, null);
-  assert.equal(formatPct(agg.attendanceRate), '—');
+  assert.equal(agg.expectedDays, 0);
+  assert.equal(formatPct(null), '—');
 });
 
 test('9: labels switch on leaveLoaded, Unauthorized never leaks', () => {

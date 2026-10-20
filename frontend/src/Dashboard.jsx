@@ -1,9 +1,10 @@
 // Dashboard shell: header, nav tabs (links), sticky filter bar, routes.
 // URL query string is the single source of truth for filters.
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { Routes, Route, Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import logoUrl from './assets/tbl-logo.svg';
 import { colors } from './theme.js';
+import { fetchDashboardMetrics } from './api.js';
 import AuthHeader from './components/AuthHeader.jsx';
 import FilterBar from './components/FilterBar.jsx';
 import Overview from './views/Overview.jsx';
@@ -13,8 +14,8 @@ import Exceptions from './views/Exceptions.jsx';
 import DataHealth from './views/DataHealth.jsx';
 import LeaveImport from './views/LeaveImport.jsx';
 import {
-  todayNairobi, classifyDay, aggregate, leaveLoadedFor, teamSlug,
-  shortDateISO, dayAndShortISO, isWeekendISO, carryRec, dayWeight,
+  todayNairobi, leaveLoadedFor, adaptMetrics,
+  shortDateISO, dayAndShortISO, isWeekendISO,
 } from './metrics.js';
 import {
   parseFilters, serializeFilters, rangeDates, teamMaps, defaultFilters,
@@ -30,6 +31,14 @@ const TABS = [
 ];
 
 const SPECIFIC_DEFAULTS = { view: 'list', q: '', type: 'all', sort: '', allteams: false, group: '' };
+
+// Rendered before the metrics request resolves / if it fails.
+const EMPTY_AGG = {
+  employees: [], daily: [], teams: [], headcount: 0, attendanceRate: null,
+  isProvisional: false, provisionalDays: 0, noDataDays: 0, presentDays: 0,
+  onLeaveDays: 0, absentDays: 0, unverifiedDays: 0, leaveConflictDays: 0,
+  missingCheckouts: 0, neverPunchedCount: 0, avgHours: null, biometricDays: 0,
+};
 
 export function LeaveBanner() {
   return (
@@ -129,31 +138,38 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
     calMeta: calMeta || {},
     excludeNeverPunched: filters.nopunch,
   }), [today, leaveLoaded, leaveActive, coverage, calMeta, filters.nopunch]);
-  const agg = useMemo(() => aggregate(rows, scopeDates, ctx, rosterInScope), [rows, scopeDates, ctx, rosterInScope]);
+  const [metrics, setMetrics] = useState(null);
 
-  const daily = useMemo(() => scopeDates.map((d) => {
-    const byId = new Map();
-    for (const r of rows) if (r.date === d) byId.set(r.employeeId, r);
-    let present = 0, expected = 0, noRecord = 0, leave = 0, inProg = 0, absent = 0, unverified = 0;
-    for (const e of agg.employees) {
-      const rec = byId.get(e.id) || carryRec(e.id, d, ctx);
-      const st = classifyDay(rec, ctx);
-      const w = dayWeight(st, rec);
-      present += w.present;
-      expected += w.expected;
-      if (st === 'no_record' || st === 'absent') noRecord += w.expected;
-      if (st === 'absent') absent += w.expected;
-      if (st === 'absent_unverified' || st === 'unverified') unverified += 1;
-      if (st === 'leave' || st === 'half_leave') leave += 1;
-      if (st === 'in_progress' || st === 'pending') inProg += 1;
-    }
-    return {
-      date: d, label: dayAndShortISO(d), full: `${dayAndShortISO(d)} ${shortDateISO(d).split(' ')[0]}`,
-      weekend: isWeekendISO(d),
-      rate: expected ? Math.round((present / expected) * 1000) / 10 : null,
-      present, expected, noRecord, leave, inProg, absent, unverified,
-    };
-  }), [scopeDates, rows, agg.employees, ctx]);
+  const metricsKey = [
+    filters.day || '', dates[0] || '', dates[dates.length - 1] || '',
+    filters.teams ? filters.teams.join(',') : '', filters.shift,
+    filters.nopunch ? 'exclude' : '',
+  ].join('|');
+
+  useEffect(() => {
+    const from = filters.day || dates[0];
+    const to = filters.day || dates[dates.length - 1];
+    if (!from || !to) return undefined;
+    let cancelled = false;
+    fetchDashboardMetrics({
+      date_from: from,
+      date_to: to,
+      teams: filters.teams ? filters.teams.join(',') : undefined,
+      shift: filters.shift !== 'all' ? filters.shift : undefined,
+      exclude_never_punched: filters.nopunch || undefined,
+    }).then((m) => { if (!cancelled) setMetrics(m); })
+      .catch(() => { if (!cancelled) setMetrics(null); });
+    return () => { cancelled = true; };
+  }, [metricsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const agg = useMemo(() => adaptMetrics(metrics) || EMPTY_AGG, [metrics]);
+
+  const daily = useMemo(() => (agg.daily || []).map((d) => ({
+    ...d,
+    label: dayAndShortISO(d.date),
+    full: `${dayAndShortISO(d.date)} ${shortDateISO(d.date).split(' ')[0]}`,
+    weekend: isWeekendISO(d.date),
+  })), [agg.daily]);
 
   const teamHeadcounts = useMemo(() => {
     const m = {};
@@ -173,7 +189,7 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
   const scope = {
     filters, months, teamNames, slugToName, today, dates, scopeDates, rows,
     rosterInScope, leaveLoaded, leaveActive, isAdmin, calendarOk, ctx, agg, daily, teamHeadcounts, daysInView,
-    coverage, update, switchTab,
+    apiTeams: agg.teams, coverage, update, switchTab,
   };
 
   return (

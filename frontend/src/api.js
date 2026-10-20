@@ -51,6 +51,18 @@ export const fetchHolidays = (params) => getJSON('/holidays', params);
 export const fetchWfh = (params) => getJSON('/wfh', params);
 export const fetchEmployees = () => getJSON('/employees');
 export const fetchCoverage = () => getJSON('/stats/coverage');
+// Backend is the single source of truth for statuses and rates (spec §2).
+export const fetchDashboardMetrics = (params) => getJSON('/dashboard/metrics', params);
+export const fetchRoster = (params) => getJSON('/roster', params);
+export async function downloadRosterCsv(params) {
+  const p = new URLSearchParams();
+  Object.entries({ ...params, format: 'csv' }).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') p.set(k, v);
+  });
+  const r = await apiFetch(apiUrl(`/roster?${p}`));
+  if (!r.ok) throw new Error(`/roster ${r.status}`);
+  return r.text();
+}
 export const fetchSyncLog = (limit = 50) => getJSON('/sync-log', { limit });
 export const createWfh = (payload) => postJSON('/wfh', payload);
 export const deleteWfh = (id) => delJSON(`/wfh/${id}`);

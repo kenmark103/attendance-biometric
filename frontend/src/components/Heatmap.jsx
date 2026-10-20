@@ -8,7 +8,7 @@ import { STATUS_COLORS as FILL } from '../statusColors.js';
 
 const CELL = 18, GAP = 2;
 
-export default function AttendanceHeatmap({ employees, rows, dates, ctx, scope, groupByTeam = false }) {
+export default function AttendanceHeatmap({ employees, rows, dates, ctx, scope, groupByTeam = false, noDataDates, teamRates }) {
   const { leaveLoaded } = ctx;
   const matrix = useMemo(() => {
     const byEmp = new Map();
@@ -57,27 +57,34 @@ export default function AttendanceHeatmap({ employees, rows, dates, ctx, scope, 
               const e = matrix.capped[ri];
               const showTeam = groupByTeam && e.team !== lastTeam;
               lastTeam = e.team;
+              const teamRate = teamRates ? teamRates[e.team] : undefined;
               return (
                 <React.Fragment key={e.id}>
                   {showTeam && (
-                    <tr><td colSpan={dates.length + 1} style={{ fontSize: 11, fontWeight: 600, color: colors.muted, paddingTop: 6 }}>{e.team}</td></tr>
+                    <tr><td colSpan={dates.length + 1} style={{ fontSize: 11, fontWeight: 600, color: colors.muted, paddingTop: 6 }}>
+                      {e.team}{teamRate !== undefined && teamRate !== null ? ` — ${teamRate}` : ''}
+                    </td></tr>
                   )}
                   <tr>
                     <td style={{ position: 'sticky', left: 0, background: colors.panel, zIndex: 1, fontSize: 12, whiteSpace: 'nowrap', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }} title={e.name}>{e.name}</td>
                     {row.map(({ rec, status }, di) => {
-                      const nonWorking = status === 'weekend' || status === 'holiday';
-                      const label = `${e.name}, ${dates[di]}, ${statusLabel(status, leaveLoaded)}`;
-                      const tip = `${label}${rec.checkIn ? `, in ${rec.checkIn}` : ''}${rec.checkOut ? `, out ${rec.checkOut}` : ''}${rec.hours ? `, ${rec.hours}h` : ''}`;
+                      const dayNoData = noDataDates && noDataDates.has(dates[di]);
+                      const shownStatus = dayNoData ? 'no_data' : status;
+                      const nonWorking = shownStatus === 'weekend' || shownStatus === 'holiday';
+                      const label = `${e.name}, ${dates[di]}, ${dayNoData ? 'No data' : statusLabel(status, leaveLoaded)}`;
+                      const tip = `${label}${!dayNoData && rec.checkIn ? `, in ${rec.checkIn}` : ''}${!dayNoData && rec.checkOut ? `, out ${rec.checkOut}` : ''}${!dayNoData && rec.hours ? `, ${rec.hours}h` : ''}`;
                       return (
                         <td key={dates[di]} data-emp={e.id} data-date={dates[di]}
                           title={tip} aria-label={label}
                           style={{
                             width: CELL, height: CELL, borderRadius: 3, cursor: 'pointer',
-                            background: nonWorking
-                              ? `repeating-linear-gradient(45deg, ${FILL[status]} 0 3px, #efefea 3px 6px)`
-                              : FILL[status] || 'transparent',
-                            border: status === 'in_progress' ? `1.5px dashed ${colors.good}`
-                              : status === 'pending' ? `1px dotted ${colors.line}` : 'none',
+                            background: dayNoData
+                              ? `radial-gradient(${FILL.no_data} 1px, transparent 1.2px) 0 0 / 5px 5px, #f6f4ef`
+                              : nonWorking
+                                ? `repeating-linear-gradient(45deg, ${FILL[status]} 0 3px, #efefea 3px 6px)`
+                                : FILL[status] || 'transparent',
+                            border: !dayNoData && status === 'in_progress' ? `1.5px dashed ${colors.good}`
+                              : !dayNoData && status === 'pending' ? `1px dotted ${colors.line}` : 'none',
                             boxSizing: 'border-box',
                           }} />
                       );
@@ -104,16 +111,20 @@ function Legend({ leaveLoaded }) {
     ['Missing check-out', FILL.missing_checkout],
     ...(leaveLoaded ? [['On leave', FILL.leave]] : []),
     [statusLabel('no_record', leaveLoaded), FILL.no_record],
+    ['Unverified', FILL.absent_unverified],
     ['In progress', FILL.in_progress],
-    ['Non-working day', FILL.weekend, true],
+    ['Non-working day', FILL.weekend, 'stripes'],
+    ['No data', FILL.no_data, 'dots'],
   ];
   return (
     <div style={{ display: 'flex', gap: 14, fontSize: 12, color: colors.muted, marginBottom: 8, flexWrap: 'wrap' }}>
-      {items.map(([label, fill, hatch]) => (
+      {items.map(([label, fill, pattern]) => (
         <span key={label}>
           <span style={{
             display: 'inline-block', width: 12, height: 12, borderRadius: 3, marginRight: 5, verticalAlign: -1,
-            background: hatch ? `repeating-linear-gradient(45deg, ${fill} 0 2px, #efefea 2px 4px)` : fill,
+            background: pattern === 'stripes' ? `repeating-linear-gradient(45deg, ${fill} 0 2px, #efefea 2px 4px)`
+              : pattern === 'dots' ? `radial-gradient(${fill} 1px, transparent 1.2px) 0 0 / 5px 5px, #f6f4ef`
+                : fill,
           }} />
           {label}
         </span>

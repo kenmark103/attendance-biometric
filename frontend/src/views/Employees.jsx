@@ -7,6 +7,7 @@ import {
   statusLabel, classifyDay, outSuffix, toCSV, shortDateISO, day3ISO, carryRec,
 } from '../metrics.js';
 import { LeaveBanner } from '../Dashboard.jsx';
+import { fetchRoster, downloadRosterCsv } from '../api.js';
 import AttendanceHeatmap from '../components/Heatmap.jsx';
 import { EmptyState } from './Teams.jsx';
 
@@ -92,7 +93,7 @@ export default function Employees({ scope }) {
                 borderRadius: 4, background: colors.panel, color: colors.ink, width: 220,
               }} />
             <div style={{ display: 'flex', gap: 4 }} role="group" aria-label="View">
-              {['list', 'heatmap'].map((v) => (
+              {[['list', 'List'], ['heatmap', 'Heatmap'], ['roster', 'Roster']].map(([v, label]) => (
                 <button key={v} onClick={() => update({ view: v })}
                   style={{
                     fontFamily: 'inherit', fontSize: 12.5, padding: '7px 12px', cursor: 'pointer',
@@ -100,7 +101,7 @@ export default function Employees({ scope }) {
                     background: filters.view === v ? colors.ink : colors.panel,
                     color: filters.view === v ? colors.paper : colors.ink, borderRadius: 20,
                   }}>
-                  {v === 'list' ? 'List' : 'Heatmap'}
+                  {label}
                 </button>
               ))}
             </div>
@@ -114,8 +115,11 @@ export default function Employees({ scope }) {
             )}
           </div>
 
-          {filters.view === 'heatmap' ? (
-            <AttendanceHeatmap employees={main} rows={rows} dates={scopeDates} ctx={ctx} scope={scope} groupByTeam />
+          {filters.view === 'roster' ? (
+            <RosterView scope={scope} />
+          ) : filters.view === 'heatmap' ? (
+            <AttendanceHeatmap employees={main} rows={rows} dates={scopeDates} ctx={ctx} scope={scope} groupByTeam
+              noDataDates={new Set((scope.daily || []).filter((d) => d.state === 'no_data').map((d) => d.date))} />
           ) : sorted.length === 0 && punched.length === 0 ? (
             <EmptyState scope={scope} />
           ) : (
@@ -127,7 +131,7 @@ export default function Employees({ scope }) {
                       {[['name', 'Name'], ['team', 'Team']].map(([k, l]) => (
                         <th key={k} onClick={() => toggleSort(k)} style={{ ...th, cursor: 'pointer' }}>{l}{sortMark(k)}</th>
                       ))}
-                      {[['present', 'Present'], ['leave', 'On leave'], ['noRecord', noRecordLabel], ['missing', 'Missing out'], ['avgHours', 'Avg hrs/day'], ['overtime', 'OT hrs'], ['offshift', 'Off-shift']].map(([k, l]) => (
+                      {[['present', 'Present'], ['leave', 'On leave'], ['noRecord', noRecordLabel], ['missing', 'Missing out'], ['avgHours', 'Avg hrs/day'], ['overtime', 'OT hrs']].map(([k, l]) => (
                         <th key={k} onClick={() => toggleSort(k)} style={{ ...thR, cursor: 'pointer' }}>{l}{sortMark(k)}</th>
                       ))}
                     </tr>
@@ -147,7 +151,6 @@ export default function Employees({ scope }) {
                         <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{e.missing || '—'}</td>
                         <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{e.avgHours || '—'}</td>
                         <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{e.overtime ? e.overtime.toFixed(1) : '—'}</td>
-                        <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{e.offshift || '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -163,7 +166,7 @@ export default function Employees({ scope }) {
             </>
           )}
 
-          {punched.length > 0 && (
+          {filters.view !== 'roster' && punched.length > 0 && (
             <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, background: colors.panel, marginTop: 12 }}>
               <button onClick={() => setGroupOpen((o) => !o)} style={{
                 width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer',
@@ -208,6 +211,142 @@ function pageBtn(disabled) {
     background: colors.panel, color: disabled ? colors.muted : colors.ink, opacity: disabled ? 0.6 : 1,
   };
 }
+
+const fieldStyle = {
+  fontFamily: 'inherit', fontSize: 12.5, padding: '6px 8px', marginLeft: 6,
+  border: `1px solid ${colors.line}`, borderRadius: 4, background: colors.panel, color: colors.ink,
+};
+
+// Roster mode (spec §7): "who punched in on date X from teams Y".
+// All rows/statuses come from GET /roster; nothing is computed here.
+function RosterView({ scope }) {
+  const { daily, scopeDates, slugToName, filters } = scope;
+  const withData = (daily || []).filter((d) => d.state !== 'no_data' && d.rate !== null).map((d) => d.date);
+  const defaultDate = withData.length ? withData[withData.length - 1] : (scopeDates[scopeDates.length - 1] || '');
+
+  const [date, setDate] = useState(defaultDate);
+  useEffect(() => { setDate(defaultDate); }, [defaultDate]);
+  const [status, setStatus] = useState('present');
+  const [teams, setTeams] = useState(filters.teams || []);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const teamsParam = teams.length ? teams.join(',') : undefined;
+  const rosterKey = [date, teamsParam || '', status].join('|');
+
+  useEffect(() => {
+    if (!date) return undefined;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    fetchRoster({ date, teams: teamsParam, status: status || undefined })
+      .then((r) => { if (!cancelled) { setData(r); setLoading(false); } })
+      .catch((e) => { if (!cancelled) { setError(String(e.message || e)); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, [rosterKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const rows = data?.rows || [];
+  const dateState = data?.date_state;
+
+  async function exportCsv() {
+    try {
+      const text = await downloadRosterCsv({ date, teams: teamsParam, status: status || undefined });
+      const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `roster-${date}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { setError(String(e.message || e)); }
+  }
+
+  const teamOptions = [...slugToName.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12 }}>
+        <label style={{ fontSize: 12.5, color: colors.muted }}>
+          Date
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={fieldStyle} />
+        </label>
+        <label style={{ fontSize: 12.5, color: colors.muted }}>
+          Status
+          <select value={status} onChange={(e) => setStatus(e.target.value)} style={fieldStyle}>
+            <option value="present">Present</option>
+            <option value="on_leave">On leave</option>
+            <option value="absent">Absent</option>
+            <option value="unverified">Unverified</option>
+            <option value="">All statuses</option>
+          </select>
+        </label>
+        <label style={{ fontSize: 12.5, color: colors.muted }}>
+          Teams (none = all)
+          <select multiple size={4} value={teams}
+            onChange={(e) => setTeams([...e.target.selectedOptions].map((o) => o.value))}
+            style={{ ...fieldStyle, marginLeft: 6, verticalAlign: 'top', minWidth: 160 }}>
+            {teamOptions.map(([slug, name]) => <option key={slug} value={slug}>{name}</option>)}
+          </select>
+        </label>
+        <span style={{ fontSize: 13, marginLeft: 'auto' }}>{loading ? 'Loading…' : `${rows.length} people`}</span>
+        <button onClick={exportCsv} disabled={!rows.length} style={{
+          fontFamily: 'inherit', fontSize: 12.5, padding: '7px 14px', cursor: rows.length ? 'pointer' : 'default',
+          border: `1px solid ${colors.line}`, borderRadius: 4, background: colors.panel,
+          color: rows.length ? colors.ink : colors.muted, opacity: rows.length ? 1 : 0.6,
+        }}>Export CSV</button>
+      </div>
+
+      {error && <div style={{ fontSize: 13, color: colors.alert, marginBottom: 12 }}>{error}</div>}
+
+      {!error && dateState === 'no_data' && (
+        <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, background: colors.panel, padding: 32, textAlign: 'center', fontSize: 13, color: colors.muted }}>
+          No biometric data for this date (sync gap).
+        </div>
+      )}
+      {!error && dateState === 'non_working' && (
+        <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, background: colors.panel, padding: 32, textAlign: 'center', fontSize: 13, color: colors.muted }}>
+          Weekend or public holiday.
+        </div>
+      )}
+      {!error && !loading && data && !['no_data', 'non_working'].includes(dateState) && rows.length === 0 && (
+        <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, background: colors.panel, padding: 32, textAlign: 'center', fontSize: 13, color: colors.muted }}>
+          No people match this filter.
+        </div>
+      )}
+
+      {!error && rows.length > 0 && (
+        <div style={{ border: `1px solid ${colors.line}`, borderRadius: 4, overflow: 'hidden', background: colors.panel }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={th}>Name</th><th style={th}>ID</th><th style={th}>Team</th>
+              <th style={th}>Status</th><th style={thR}>First punch</th><th style={thR}>Last punch</th>
+              <th style={thR}>Hours</th><th style={thR}>Missing out</th>
+            </tr></thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={`${r.employee_id}-${i}`} style={{ borderTop: `1px solid ${colors.line}`, background: i % 2 ? 'rgba(0,0,0,0.015)' : 'transparent' }}>
+                  <td style={{ ...td, fontWeight: 500 }}>{r.name}</td>
+                  <td style={{ ...td, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5 }}>{r.employee_id}</td>
+                  <td style={{ ...td, fontSize: 12.5 }}>{r.team}</td>
+                  <td style={td}>{r.status === 'no_record' ? statusLabel('no_record', true) : (ROSTER_STATUS_label(r.status) || r.status)}</td>
+                  <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{r.first_punch || '—'}</td>
+                  <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{r.last_punch || '—'}</td>
+                  <td style={{ ...td, textAlign: 'right', fontFamily: "'IBM Plex Mono', monospace" }}>{r.hours_worked || '—'}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{r.missing_checkout ? 'Yes' : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ROSTER_STATUS_label = (s) => ({
+  present: 'Present', on_leave: 'On leave', absent: 'Absent',
+  unverified: 'Unverified', missing_checkout: 'Missing check-out',
+}[s]);
+
 
 function Drawer({ employee: e, scope, overlay }) {
   const { scopeDates, rows, ctx, leaveLoaded, leaveActive, filters, update } = scope;

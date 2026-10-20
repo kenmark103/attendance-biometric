@@ -10,8 +10,8 @@ const th = { textAlign: 'left', padding: '10px 16px', color: colors.muted, fontW
 const td = { padding: '9px 16px', fontSize: 13 };
 const PAGE = 100;
 
-const TYPES = ['all', 'no_record', 'missing_checkout', 'off_shift', 'late_in', 'early_out', 'unmatched_leave', 'leave_conflict', 'unverified_day'];
-const TYPE_LABEL = { all: 'All', no_record: 'No record', missing_checkout: 'Missing check-out', off_shift: 'Off-shift', late_in: 'Late in', early_out: 'Early out', unmatched_leave: 'Unmatched leave', leave_conflict: 'Leave conflict', unverified_day: 'Unverified day' };
+const TYPES = ['all', 'no_record', 'missing_checkout', 'late_in', 'early_out', 'unmatched_leave', 'leave_conflict', 'unverified_day'];
+const TYPE_LABEL = { all: 'All', no_record: 'No record', missing_checkout: 'Missing check-out', late_in: 'Late in', early_out: 'Early out', unmatched_leave: 'Unmatched leave', leave_conflict: 'Leave conflict', unverified_day: 'Unverified day' };
 const OVERLAY_ONLY = new Set(['leave_conflict', 'unverified_day']);
 
 function buildEntries(rows, scopeDates, neverIds, ctx) {
@@ -36,9 +36,6 @@ function buildEntries(rows, scopeDates, neverIds, ctx) {
       }
       if (st === 'missing_checkout') {
         entries.push({ ...base, type: 'missing_checkout', detail: `In ${rec.checkIn || rec.checkOut || '—'}, no check-out` });
-      }
-      if ((st === 'present' || st === 'missing_checkout') && rec.shiftAnomaly) {
-        entries.push({ ...base, type: 'off_shift', detail: `Punch outside ${rec.assignedShift || 'assigned'} shift` });
       }
       if (rec.late) entries.push({ ...base, type: 'late_in', detail: `In ${rec.checkIn}` });
       if (rec.early) entries.push({ ...base, type: 'early_out', detail: `Out ${rec.checkOut}` });
