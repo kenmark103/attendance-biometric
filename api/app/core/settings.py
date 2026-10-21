@@ -2,6 +2,18 @@
 (no pydantic settings module). Follows the auth env contract.
 
 JWT_SECRET must be 32+ chars — the app refuses to start otherwise.
+
+# --- Leave ingestion (spec §§3, 9, 12) ------------------------------------
+# EXPECTED_DEPARTMENT_LABELS is ';'-separated (the label itself contains a
+# comma). TRUST_ZOHO_PRESENCE gates `present_zoho_only`; LEAVE_SOURCE_PRIORITY
+# orders 'api' over 'xls' when both exist; LEAVE_TYPE_DETAIL_ROLES gates
+# sick/maternity/paternity detail (default admin); MIN_PUNCH_MINUTES matches
+# the repo's punch definition (default 0 = any punch counts).
+
+# Legacy knob from the pre-auth era. Auth routes are always mounted;
+# this only gates whether data endpoints still accept anonymous traffic.
+# Default true once auth lands — set explicitly to "false" for open dev.
+
 """
 import os
 
@@ -28,17 +40,8 @@ BOOTSTRAP_ADMIN_PASSWORD = _get("BOOTSTRAP_ADMIN_PASSWORD", "")
 
 DATABASE_URL = _get("DATABASE_URL", "postgresql://attendance:attendance@db:5432/attendance")
 
-# Legacy knob from the pre-auth era. Auth routes are always mounted;
-# this only gates whether data endpoints still accept anonymous traffic.
-# Default true once auth lands — set explicitly to "false" for open dev.
 AUTH_REQUIRED = _get("AUTH_REQUIRED", "true").lower() == "true"
 
-# --- Leave ingestion (spec §§3, 9, 12) ------------------------------------
-# EXPECTED_DEPARTMENT_LABELS is ';'-separated (the label itself contains a
-# comma). TRUST_ZOHO_PRESENCE gates `present_zoho_only`; LEAVE_SOURCE_PRIORITY
-# orders 'api' over 'xls' when both exist; LEAVE_TYPE_DETAIL_ROLES gates
-# sick/maternity/paternity detail (default admin); MIN_PUNCH_MINUTES matches
-# the repo's punch definition (default 0 = any punch counts).
 EXPECTED_DEPARTMENT_LABELS = [
     s.strip() for s in _get(
         "EXPECTED_DEPARTMENT_LABELS",
