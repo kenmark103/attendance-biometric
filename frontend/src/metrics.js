@@ -129,13 +129,36 @@ function classifyLegacy(rec, ctx) {
   return 'no_record';
 }
 
+// The backend metrics endpoint is authoritative for legacy-mode statuses.
+// Keep the local fallback for older/partial responses, but do not silently
+// recompute a status when the API has already supplied one.
+function classifyBackendLegacy(rec, ctx) {
+  if (ctx.leaveActive || !rec?.employeeId || !ctx.backendDays) return null;
+  const day = ctx.backendDays.get(`${rec.employeeId}|${rec.date}`);
+  if (!day) return null;
+  if (day.status === 'non_working') {
+    return rec.isHoliday ? 'holiday' : (isWeekendISO(rec.date) ? 'weekend' : 'holiday');
+  }
+  if (day.status === 'pending') return day.in_progress ? 'in_progress' : 'pending';
+  if (day.status === 'no_data') return 'no_record';
+  if (day.status === 'present') {
+    if (day.in_progress) return 'in_progress';
+    if (day.missing_checkout) return 'missing_checkout';
+    return 'present';
+  }
+  if (day.status === 'on_leave') return 'leave';
+  if (day.status === 'absent') return 'absent';
+  if (day.status === 'unverified') return 'absent_unverified';
+  return null;
+}
+
 // Leave-calendar overlay (leave-ingestion spec §9). First match wins.
 // `rec.dayKind` is the authoritative per-day kind (undefined = no calendar
 // row, beyond coverage, or employee not in any covering import -> rule 1).
 // Order follows the spec table, with weekend/holiday kept ahead of the
 // today/pending handling so future dates keep their day-type label.
 export function classifyDay(rec, ctx) {
-  if (!ctx.leaveActive) return classifyLegacy(rec, ctx);
+  if (!ctx.leaveActive) return classifyBackendLegacy(rec, ctx) || classifyLegacy(rec, ctx);
   const kind = rec.dayKind ?? null;
   const punch = hasPunch(rec);
   if (kind === 'not_employed') return 'not_employed';

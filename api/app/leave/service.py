@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
+import logging
 from zoneinfo import ZoneInfo
 
 from psycopg2.extras import execute_values, Json
 
 from app.core import settings
 from app.leave.parsing import ParsedImport
+
+log = logging.getLogger(__name__)
 
 NAIROBI = ZoneInfo("Africa/Nairobi")
 STAGING_CHUNK = 2000
@@ -304,8 +307,8 @@ def finalize_preview(cur, import_id: int, parsed: ParsedImport,
     cur.execute("UPDATE leave_import SET status = 'preview_ready', counts = %s, "
                 "sheet_summary = %s, preview_names = %s WHERE id = %s",
                 (Json(counts), Json(sheet_summary), Json(preview_names), import_id))
-    print(f"leave import {import_id}: preview ready "
-          f"({counts['total']} rows, {counts['new']} new, {counts['changed']} changed)")
+    log.info("leave import %s: preview ready (%s rows, %s new, %s changed)",
+             import_id, counts['total'], counts['new'], counts['changed'])
     return counts
 
 
@@ -427,8 +430,8 @@ def commit_import(cur, import_id: int, sheets: list[str],
     cur.execute("SELECT COUNT(*) AS n FROM calendar_day WHERE batch_id = %s",
                 (import_id,))
     batch_rows = cur.fetchone()["n"]
-    print(f"leave import {import_id}: committed ({upserted} upserted, "
-          f"{audited} audited, coverage {through})")
+    log.info("leave import %s: committed (%s upserted, %s audited, coverage %s)",
+             import_id, upserted, audited, through)
     return {"import_id": import_id, "status": "committed",
             "committed_rows": upserted, "audited": audited,
             "coverage_through": str(through) if through else None,
@@ -446,7 +449,7 @@ def discard_import(cur, import_id: int) -> dict:
     cur.execute("DELETE FROM leave_import_staging WHERE import_id = %s", (import_id,))
     cur.execute("UPDATE leave_import SET status = 'discarded', preview_names = NULL "
                 "WHERE id = %s", (import_id,))
-    print(f"leave import {import_id}: discarded")
+    log.info("leave import %s: discarded", import_id)
     return {"import_id": import_id, "status": "discarded"}
 
 
@@ -510,7 +513,8 @@ def revert_import(cur, import_id: int, code_map: dict) -> dict:
         cur.execute("DELETE FROM leave_coverage WHERE source = 'xls'")
     cur.execute("UPDATE leave_import SET status = 'reverted', reverted_at = now() "
                 "WHERE id = %s", (import_id,))
-    print(f"leave import {import_id}: reverted ({restored} restored, {skipped} skipped)")
+    log.info("leave import %s: reverted (%s restored, %s skipped)",
+             import_id, restored, skipped)
     return {"import_id": import_id, "status": "reverted",
             "restored": restored, "skipped": skipped}
 
@@ -578,5 +582,5 @@ def reprocess_calendar(cur) -> dict:
                         (kind, leave_code, frac, presence,
                          r["employee_id"], r["date"], r["source"]))
             updated += 1
-    print(f"leave reprocess: {updated}/{len(rows)} calendar rows updated")
+    log.info("leave reprocess: %s/%s calendar rows updated", updated, len(rows))
     return {"scanned": len(rows), "updated": updated}

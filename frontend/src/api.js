@@ -8,38 +8,53 @@ function apiUrl(path) {
   return `${API_BASE}${path}`;
 }
 
-async function getJSON(path, params = {}) {
+async function throwApiError(path, response) {
+  let detail = '';
+  try {
+    const body = await response.clone().json();
+    detail = typeof body?.detail === 'string'
+      ? body.detail
+      : body?.detail ? JSON.stringify(body.detail) : '';
+  } catch {
+    detail = (await response.text().catch(() => '')).trim();
+  }
+  const error = new Error(`${path} ${response.status}${detail ? `: ${detail}` : ''}`);
+  error.status = response.status;
+  throw error;
+}
+
+async function getJSON(path, params = {}, options = {}) {
   const p = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== null && v !== '') p.set(k, v);
   });
   const qs = p.toString() ? `?${p}` : '';
-  const r = await apiFetch(apiUrl(`${path}${qs}`));
-  if (!r.ok) throw new Error(`${path} ${r.status}`);
+  const r = await apiFetch(apiUrl(`${path}${qs}`), options);
+  if (!r.ok) await throwApiError(path, r);
   return r.json();
 }
 
 async function postJSON(path, body) {
   const r = await apiFetch(apiUrl(path), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!r.ok) throw new Error(`${path} ${r.status}: ${await r.text()}`);
+  if (!r.ok) await throwApiError(path, r);
   return r.json();
 }
 
 async function patchJSON(path, body) {
   const r = await apiFetch(apiUrl(path), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!r.ok) throw new Error(`${path} ${r.status}: ${await r.text()}`);
+  if (!r.ok) await throwApiError(path, r);
   return r.json();
 }
 
 async function putJSON(path, body) {
   const r = await apiFetch(apiUrl(path), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!r.ok) throw new Error(`${path} ${r.status}: ${await r.text()}`);
+  if (!r.ok) await throwApiError(path, r);
   return r.json();
 }
 
 async function delJSON(path) {
   const r = await apiFetch(apiUrl(path), { method: 'DELETE' });
-  if (!r.ok) throw new Error(`${path} ${r.status}: ${await r.text()}`);
+  if (!r.ok) await throwApiError(path, r);
   return r.json();
 }
 
@@ -52,7 +67,7 @@ export const fetchWfh = (params) => getJSON('/wfh', params);
 export const fetchEmployees = () => getJSON('/employees');
 export const fetchCoverage = () => getJSON('/stats/coverage');
 // Backend is the single source of truth for statuses and rates (spec §2).
-export const fetchDashboardMetrics = (params) => getJSON('/dashboard/metrics', params);
+export const fetchDashboardMetrics = (params, options) => getJSON('/dashboard/metrics', params, options);
 export const fetchRoster = (params) => getJSON('/roster', params);
 export async function downloadRosterCsv(params) {
   const p = new URLSearchParams();
@@ -60,7 +75,7 @@ export async function downloadRosterCsv(params) {
     if (v !== undefined && v !== null && v !== '') p.set(k, v);
   });
   const r = await apiFetch(apiUrl(`/roster?${p}`));
-  if (!r.ok) throw new Error(`/roster ${r.status}`);
+  if (!r.ok) await throwApiError('/roster', r);
   return r.text();
 }
 export const fetchSyncLog = (limit = 50) => getJSON('/sync-log', { limit });
@@ -73,7 +88,7 @@ export async function uploadLeave(file) {
   const form = new FormData();
   form.append('file', file);
   const r = await apiFetch(apiUrl('/leave/imports'), { method: 'POST', body: form });
-  if (!r.ok) throw new Error(`/leave/imports ${r.status}: ${await r.text()}`);
+  if (!r.ok) await throwApiError('/leave/imports', r);
   return r.json();
 }
 export const fetchLeaveImport = (id) => getJSON(`/leave/imports/${id}`);

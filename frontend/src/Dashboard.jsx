@@ -1,11 +1,9 @@
 // Dashboard shell: header, nav tabs (links), sticky filter bar, routes.
 // URL query string is the single source of truth for filters.
 import React, { useMemo, useState, useEffect } from 'react';
-import { Routes, Route, Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import logoUrl from './assets/tbl-logo.svg';
+import { Routes, Route, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { colors } from './theme.js';
-import { fetchDashboardMetrics } from './api.js';
-import AuthHeader from './components/AuthHeader.jsx';
+import { DashboardHeader, DashboardNav } from './components/DashboardChrome.jsx';
 import FilterBar from './components/FilterBar.jsx';
 import Overview from './views/Overview.jsx';
 import Teams, { TeamDetail } from './views/Teams.jsx';
@@ -20,6 +18,7 @@ import {
 import {
   parseFilters, serializeFilters, rangeDates, teamMaps, defaultFilters,
 } from './filters.js';
+import useDashboardMetrics from './hooks/useDashboardMetrics.js';
 
 const TABS = [
   ['/', 'Overview'],
@@ -128,6 +127,26 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
 
   const leaveLoaded = leaveLoadedFor(scopeDates, coverage?.leave_by_month ?? []);
   const leaveActive = !!(coverage?.leave_coverage?.through_date);
+  const metrics = useDashboardMetrics({
+    day: filters.day,
+    dates,
+    teams: filters.teams,
+    shift: filters.shift,
+    excludeNeverPunched: filters.nopunch,
+  });
+
+  const agg = useMemo(() => adaptMetrics(metrics) || EMPTY_AGG, [metrics]);
+
+  const backendDays = useMemo(() => {
+    const out = new Map();
+    for (const employee of agg.employees || []) {
+      for (const day of employee.days || []) {
+        out.set(`${employee.id}|${day.date}`, day);
+      }
+    }
+    return out;
+  }, [agg.employees]);
+
   const ctx = useMemo(() => ({
     today,
     leaveLoaded: leaveLoaded || leaveActive,
@@ -136,33 +155,9 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
     coveredDates: new Set((coverage?.per_date ?? []).filter((d) => d.count > 0).map((d) => d.date)),
     trustZoho: coverage?.trust_zoho_presence !== false,
     calMeta: calMeta || {},
+    backendDays,
     excludeNeverPunched: filters.nopunch,
-  }), [today, leaveLoaded, leaveActive, coverage, calMeta, filters.nopunch]);
-  const [metrics, setMetrics] = useState(null);
-
-  const metricsKey = [
-    filters.day || '', dates[0] || '', dates[dates.length - 1] || '',
-    filters.teams ? filters.teams.join(',') : '', filters.shift,
-    filters.nopunch ? 'exclude' : '',
-  ].join('|');
-
-  useEffect(() => {
-    const from = filters.day || dates[0];
-    const to = filters.day || dates[dates.length - 1];
-    if (!from || !to) return undefined;
-    let cancelled = false;
-    fetchDashboardMetrics({
-      date_from: from,
-      date_to: to,
-      teams: filters.teams ? filters.teams.join(',') : undefined,
-      shift: filters.shift !== 'all' ? filters.shift : undefined,
-      exclude_never_punched: filters.nopunch || undefined,
-    }).then((m) => { if (!cancelled) setMetrics(m); })
-      .catch(() => { if (!cancelled) setMetrics(null); });
-    return () => { cancelled = true; };
-  }, [metricsKey]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const agg = useMemo(() => adaptMetrics(metrics) || EMPTY_AGG, [metrics]);
+  }), [today, leaveLoaded, leaveActive, coverage, calMeta, backendDays, filters.nopunch]);
 
   const daily = useMemo(() => (agg.daily || []).map((d) => ({
     ...d,
@@ -199,16 +194,7 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
       padding: '0 28px 48px', boxSizing: 'border-box',
     }}>
       <div style={{ maxWidth: 1280, margin: '0 auto' }}>
-        <header style={{ marginBottom: 0, padding: '24px 0 18px', borderBottom: `2px solid ${colors.primary}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-            <img src={logoUrl} alt="Technobrain" style={{ height: 46, width: 'auto', display: 'block', flexShrink: 0 }} />
-            <div style={{ width: 1, height: 32, background: colors.line, flexShrink: 0 }} />
-            <h1 style={{ fontFamily: "'Fraunces', Georgia, serif", fontWeight: 700, fontSize: 24, margin: 0, lineHeight: 1.2, color: colors.slate, whiteSpace: 'nowrap' }}>
-              Attendance Dashboard
-            </h1>
-          </div>
-          <AuthHeader user={user} onLogout={onLogout} />
-        </header>
+        <DashboardHeader user={user} onLogout={onLogout} />
 
         {leaveActive && calendarOk === false && (
           <div style={{
@@ -219,22 +205,8 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
           </div>
         )}
 
-        <nav style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${colors.line}` }} aria-label="Views">
-          {visibleTabs.map(([path, label]) => {
-            const active = path === activeTab || (path !== '/' && activeTab.startsWith(path));
-            return (
-              <Link key={path} to={{ pathname: path, search: serializeFilters(filters, months, today).toString() ? `?${serializeFilters(filters, months, today)}` : '' }}
-                onClick={(e) => { e.preventDefault(); switchTab(path); }}
-                style={{
-                  fontSize: 13.5, padding: '10px 16px', textDecoration: 'none',
-                  borderBottom: active ? `2px solid ${colors.select}` : '2px solid transparent',
-                  color: active ? colors.select : colors.muted, fontWeight: active ? 600 : 500,
-                }}>
-                {label}
-              </Link>
-            );
-          })}
-        </nav>
+        <DashboardNav tabs={visibleTabs} activeTab={activeTab} filters={filters}
+          months={months} today={today} onSwitchTab={switchTab} />
 
         <FilterBar filters={filters} months={months} teams={teamNames} teamHeadcounts={teamHeadcounts}
           daysInView={daysInView} today={today} onChange={update} neverPunchedCount={agg.neverPunchedCount}

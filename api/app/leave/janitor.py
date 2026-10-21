@@ -8,6 +8,11 @@ Runs at API startup and at the start of every upload (cheap, idempotent):
 """
 from __future__ import annotations
 
+import logging
+
+
+log = logging.getLogger(__name__)
+
 
 def run_janitor(conn) -> dict:
     cur = conn.cursor()
@@ -37,7 +42,7 @@ def run_janitor(conn) -> dict:
                     (r["id"],))
     cur.close()
     if stuck or stale or expired_ids:
-        print(f"leave janitor: {stuck} stuck, {stale} stale, "
-              f"{len(expired_ids)} expired")
+        log.info("leave janitor: %s stuck, %s stale, %s expired",
+                 stuck, stale, len(expired_ids))
     return {"stuck_parsing": stuck, "stale_committing": stale,
             "expired": len(expired_ids)}

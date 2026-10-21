@@ -24,6 +24,12 @@ class BulkAttendanceIn(BaseModel):
     records: List[AttendanceRecordIn]
 
 
+class BulkAttendanceOut(BaseModel):
+    inserted: int
+    teams_created: int
+    employees_upserted: int
+
+
 class LeaveRecordIn(BaseModel):
     employee_id: str
     date: date
@@ -36,6 +42,10 @@ class BulkLeaveIn(BaseModel):
     records: List[LeaveRecordIn]
 
 
+class BulkLeaveOut(BaseModel):
+    inserted: int
+
+
 class AttendanceTeamUpdate(BaseModel):
     employee_id: str
     date: date
@@ -44,6 +54,11 @@ class AttendanceTeamUpdate(BaseModel):
 
 class BulkAttendanceTeamUpdateIn(BaseModel):
     records: list[AttendanceTeamUpdate]
+
+
+class BulkAttendanceTeamUpdateOut(BaseModel):
+    updated: int
+    skipped: int
 
 
 class WfhIn(BaseModel):

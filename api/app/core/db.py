@@ -24,5 +24,11 @@ def get_db():
     conn = get_conn()
     try:
         yield conn
+    except Exception:
+        # Write endpoints commit explicitly. If one fails before its commit,
+        # clear the transaction before the connection is returned/closed so a
+        # pooled connection cannot retain a failed transaction state.
+        conn.rollback()
+        raise
     finally:
         conn.close()

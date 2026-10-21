@@ -8,6 +8,7 @@ from datetime import date, time
 from app.metrics.core import (
     build_metrics,
     build_roster,
+    classify,
     roster_csv,
     team_slug,
 )
@@ -239,3 +240,41 @@ def test_team_slug_matches_frontend_shape():
     assert team_slug("GBS- ENGINEERING CENTRE") == "gbs-engineering-centre"
     assert team_slug("Engineering Centre") == "engineering-centre"
     assert team_slug("") == "unassigned"
+
+
+def test_classification_order_distinguishes_pending_absent_and_unverified():
+    # Weekend/holiday wins before any attendance interpretation.
+    assert classify(d=SAT, rec=None, on_leave=False, holiday=False,
+                    no_data=False, coverage_through=COVERED, today=TODAY)["status"] == "non_working"
+    assert classify(d=THU, rec=None, on_leave=False, holiday=True,
+                    no_data=False, coverage_through=COVERED, today=TODAY)["status"] == "non_working"
+
+    # A future date is pending, even if the surrounding period is covered.
+    future = date(2026, 9, 21)
+    assert classify(d=future, rec=None, on_leave=False, holiday=False,
+                    no_data=False, coverage_through=COVERED, today=TODAY)["status"] == "pending"
+
+    # Historical dates are absent only when leave coverage reaches them;
+    # otherwise the correct result is unverified.
+    assert classify(d=WED, rec=None, on_leave=False, holiday=False,
+                    no_data=False, coverage_through=COVERED, today=TODAY)["status"] == "absent"
+    assert classify(d=WED, rec=None, on_leave=False, holiday=False,
+                    no_data=False, coverage_through=None, today=TODAY)["status"] == "unverified"
+
+
+def test_punch_wins_over_leave_but_records_conflict():
+    result = classify(
+        d=WED,
+        rec={"check_in": time(8, 0), "check_out": None, "present": True},
+        on_leave=True,
+        holiday=False,
+        no_data=False,
+        coverage_through=COVERED,
+        today=TODAY,
+    )
+    assert result["status"] == "present"
+    assert result["flags"] == {
+        "missing_checkout": True,
+        "in_progress": False,
+        "leave_conflict": True,
+    }

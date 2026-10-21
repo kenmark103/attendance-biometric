@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { lazy, Suspense, useState, useEffect } from 'react';
 import { Routes, Route, Link, Navigate, useNavigate } from 'react-router-dom';
-import Dashboard from './Dashboard.jsx';
 import AuthHeader from './components/AuthHeader.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import ChangePasswordPage from './pages/ChangePasswordPage.jsx';
@@ -9,6 +8,8 @@ import { fetchDayRecords, fetchCoverage, fetchEmployees, fetchTeams, syncNow } f
 import { bootSession, getCurrentUser, subscribe, clearSession } from './auth.js';
 import logoUrl from './assets/tbl-logo.svg';
 import { colors } from './theme.js';
+
+const Dashboard = lazy(() => import('./Dashboard.jsx'));
 
 function TopBar({ user, onLogout }) {
   return (
@@ -161,8 +162,10 @@ export default function App() {
             </span>
           </div>
         ) : (
-          <Dashboard records={records || []} calMeta={calMeta} calendarOk={calendarOk} coverage={coverage} roster={roster} user={user} onLogout={handleLogout}
-            onSyncNow={handleSyncNow} syncing={syncing} syncMsg={syncMsg} />
+          <Suspense fallback={<div style={{ fontFamily: 'sans-serif', padding: 40, color: '#6E786F' }}>Loading dashboard...</div>}>
+            <Dashboard records={records || []} calMeta={calMeta} calendarOk={calendarOk} coverage={coverage} roster={roster} user={user} onLogout={handleLogout}
+              onSyncNow={handleSyncNow} syncing={syncing} syncMsg={syncMsg} />
+          </Suspense>
         )
       } />
     </Routes>

@@ -7,6 +7,7 @@ later. Upload bytes are never persisted: staging rows + aggregated issues
 are the preview (names live only in the preview_names blob, purged on
 commit/discard/expiry). Logs carry ids, counts and codes only.
 """
+import logging
 import uuid
 from datetime import date, datetime, timezone
 
@@ -27,6 +28,7 @@ from app.leave.sample import sample_workbook_bytes
 from app.routers.schemas import LeaveCommitIn, LeaveTypeIn
 
 router = APIRouter(prefix="/leave", tags=["leave"])
+log = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = (".xls", ".xlsx")
 
@@ -133,14 +135,15 @@ def upload_leave(file: UploadFile = File(...), user=Depends(admin),
             return {"import_id": dup["id"], "status": dup["status"],
                     "already_imported": True}
         error_id = uuid.uuid4().hex[:8]
-        print(f"leave import conflict: error_id={error_id} sha={sha256[:12]}")
+        log.warning("leave import conflict: error_id=%s sha=%s",
+                    error_id, sha256[:12])
         raise HTTPException(status_code=409, detail="conflicting upload; "
                             "re-run the preview")
     except Exception as exc:  # noqa: BLE001 — mapped to 500 + error_id, never a trace
         conn.rollback()
         error_id = uuid.uuid4().hex[:8]
-        print(f"leave import failed: error_id={error_id} "
-              f"bytes={len(data)} sha={sha256[:12]} ({type(exc).__name__})")
+        log.error("leave import failed: error_id=%s bytes=%s sha=%s (%s)",
+                  error_id, len(data), sha256[:12], type(exc).__name__)
         raise HTTPException(status_code=500,
                             detail=f"import failed and nothing was saved "
                                    f"(error_id={error_id}); try again")
@@ -397,8 +400,8 @@ def commit_import(import_id: int, payload: LeaveCommitIn, user=Depends(admin),
     except Exception as exc:  # noqa: BLE001 — 500 + error_id, never a trace
         conn.rollback()
         error_id = uuid.uuid4().hex[:8]
-        print(f"leave commit {import_id} failed: error_id={error_id} "
-              f"({type(exc).__name__})")
+        log.error("leave commit %s failed: error_id=%s (%s)",
+                  import_id, error_id, type(exc).__name__)
         raise HTTPException(status_code=500,
                             detail=f"commit failed and nothing was saved "
                                    f"(error_id={error_id}); retry is safe")
@@ -441,8 +444,8 @@ def revert_import(import_id: int, user=Depends(admin), conn=Depends(get_db)):
     except Exception as exc:  # noqa: BLE001 — 500 + error_id, never a trace
         conn.rollback()
         error_id = uuid.uuid4().hex[:8]
-        print(f"leave revert {import_id} failed: error_id={error_id} "
-              f"({type(exc).__name__})")
+        log.error("leave revert %s failed: error_id=%s (%s)",
+                  import_id, error_id, type(exc).__name__)
         raise HTTPException(status_code=500,
                             detail=f"revert failed and nothing was saved "
                                    f"(error_id={error_id})")
@@ -557,6 +560,7 @@ def reprocess(user=Depends(admin), conn=Depends(get_db)):
     except Exception as exc:  # noqa: BLE001
         conn.rollback()
         error_id = uuid.uuid4().hex[:8]
-        print(f"leave reprocess failed: error_id={error_id} ({type(exc).__name__})")
+        log.error("leave reprocess failed: error_id=%s (%s)",
+                  error_id, type(exc).__name__)
         raise HTTPException(status_code=500,
                             detail=f"reprocess failed (error_id={error_id})")

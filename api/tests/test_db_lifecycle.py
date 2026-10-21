@@ -54,4 +54,5 @@ def test_close_on_exception(monkeypatch):
     with pytest.raises(RuntimeError):
         gen.throw(RuntimeError("boom"))
     assert fake.closed is True
+    assert fake.rollbacks == 1
     assert conn is fake

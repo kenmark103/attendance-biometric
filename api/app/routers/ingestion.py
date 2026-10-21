@@ -9,6 +9,7 @@ No new logic: it reuses poll_once (catch-up aware) and the promotion SQL
 file (idempotent, migrated rows stay frozen).
 """
 import os
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import create_engine
@@ -25,6 +26,7 @@ PROMOTE_SQL_PATH = os.environ.get(
     "PROMOTE_SQL_PATH", "/scripts/promote_cosec_to_attendance.sql"
 )
 SCOPE_CSV_PATH = os.environ.get("SCOPE_CSV_PATH", "/data/engineering_scope.csv")
+log = logging.getLogger(__name__)
 
 
 def _engine():
@@ -40,51 +42,56 @@ def sync_now(user=Depends(admin), conn=Depends(get_db)):
     except ConfigError as exc:
         raise HTTPException(status_code=503, detail=f"ingestion not configured: {exc}")
 
-    summary = poll_once(_engine(), settings)
-    if summary.status == "failed":
-        raise HTTPException(
-            status_code=502,
-            detail="device poll failed; see ingestion_runs for the failing range",
-        )
-
-    # Scope self-heal (same rule as the promoter loop): promotion only sees
-    # in_scope users, so a wiped scope would silently promote nothing.
     engine = _engine()
-    with engine.connect() as c:
-        from sqlalchemy import text as _text
-        scoped = c.execute(_text("SELECT count(*) FROM cosec_users WHERE in_scope")).scalar()
-    scope_restored = False
-    if scoped == 0:
-        try:
-            import_scope(engine, SCOPE_CSV_PATH, True)
-            scope_restored = True
-        except (SystemExit, OSError) as exc:
-            print(f"sync-now: scope restore failed ({exc}); promoting anyway")
-
     try:
-        with open(PROMOTE_SQL_PATH, encoding="utf-8") as f:
-            promote_sql = f.read()
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"promotion script unreadable: {exc}")
+        summary = poll_once(engine, settings)
+        if summary.status == "failed":
+            raise HTTPException(
+                status_code=502,
+                detail="device poll failed; see ingestion_runs for the failing range",
+            )
 
-    conn.autocommit = True
-    cur = conn.cursor()
-    cur.execute(promote_sql)
-    cur.execute(
-        "SELECT records_processed FROM sync_log WHERE source = 'cosec_promotion'"
-        " ORDER BY id DESC LIMIT 1"
-    )
-    row = cur.fetchone()
-    cur.close()
-    promoted = row["records_processed"] if row else 0
-    return {
-        "poll": {
-            "status": summary.status,
-            "received": summary.received,
-            "written": summary.written,
-            "malformed": summary.malformed,
-            "run_id": summary.run_id,
-        },
-        "promoted": promoted,
-        "scope_restored": scope_restored,
-    }
+        # Scope self-heal (same rule as the promoter loop): promotion only sees
+        # in_scope users, so a wiped scope would silently promote nothing.
+        with engine.connect() as c:
+            from sqlalchemy import text as _text
+            scoped = c.execute(_text("SELECT count(*) FROM cosec_users WHERE in_scope")).scalar()
+        scope_restored = False
+        if scoped == 0:
+            try:
+                import_scope(engine, SCOPE_CSV_PATH, True)
+                scope_restored = True
+            except (SystemExit, OSError) as exc:
+                log.warning("sync-now: scope restore failed (%s); promoting anyway", exc)
+
+        try:
+            with open(PROMOTE_SQL_PATH, encoding="utf-8") as f:
+                promote_sql = f.read()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"promotion script unreadable: {exc}")
+
+        conn.autocommit = True
+        cur = conn.cursor()
+        try:
+            cur.execute(promote_sql)
+            cur.execute(
+                "SELECT records_processed FROM sync_log WHERE source = 'cosec_promotion'"
+                " ORDER BY id DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        promoted = row["records_processed"] if row else 0
+        return {
+            "poll": {
+                "status": summary.status,
+                "received": summary.received,
+                "written": summary.written,
+                "malformed": summary.malformed,
+                "run_id": summary.run_id,
+            },
+            "promoted": promoted,
+            "scope_restored": scope_restored,
+        }
+    finally:
+        engine.dispose()

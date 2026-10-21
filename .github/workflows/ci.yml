@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  backend-pure:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: api/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: pytest -q tests/test_metrics_core.py tests/ingestion/test_parser.py tests/ingestion/test_quality.py
+
+  backend-db:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: attendance
+          POSTGRES_PASSWORD: attendance
+          POSTGRES_DB: attendance
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U attendance -d attendance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: api/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Initialize database
+        env:
+          PGPASSWORD: attendance
+        run: psql -h localhost -p 5434 -U attendance -d attendance -f ../db/init.sql
+      - name: Apply runtime migrations
+        env:
+          PGPASSWORD: attendance
+        run: |
+          psql -h localhost -p 5434 -U attendance -d attendance -f ../db/migrations/003_cosec_ingestion.sql
+          psql -h localhost -p 5434 -U attendance -d attendance -f ../db/migrations/005_cosec_delete_audit.sql
+          psql -h localhost -p 5434 -U attendance -d attendance -f ../db/migrations/006_sync_state.sql
+      - name: Validate runtime schema
+        env:
+          DATABASE_URL: postgresql://attendance:attendance@localhost:5434/attendance
+        run: python ../scripts/validate_schema.py
+      - name: Run database tests
+        env:
+          DATABASE_URL: postgresql://attendance:attendance@localhost:5434/attendance
+          JWT_SECRET: ci-only-secret-ci-only-secret-ci-only-secret
+          AUTH_REQUIRED: 'true'
+          BOOTSTRAP_ADMIN_PASSWORD: ci-bootstrap-password
+        run: pytest -q -m db

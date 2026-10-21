@@ -84,6 +84,18 @@ test('5: past weekday with one punch only is missing_checkout (present + excepti
   assert.equal(agg.employees[0].missing, 1);
 });
 
+test('backend day statuses are used for legacy-mode display', () => {
+  const backendDays = new Map([
+    ['1|2026-10-06', { status: 'present', missing_checkout: true }],
+    ['1|2026-10-07', { status: 'unverified' }],
+    ['1|2026-10-08', { status: 'present', in_progress: true }],
+  ]);
+  const ctx = { ...CTX, backendDays, leaveActive: false };
+  assert.equal(classifyDay(rec('1', '2026-10-06'), ctx), 'missing_checkout');
+  assert.equal(classifyDay(rec('1', '2026-10-07'), ctx), 'absent_unverified');
+  assert.equal(classifyDay(rec('1', '2026-10-08'), ctx), 'in_progress');
+});
+
 test('6: night shift keeps ProcessDate, out shows +1, hours from WorkTime', async () => {
   const { outSuffix } = await import('../src/metrics.js');
   const r = rec('1', '2026-10-06', { checkIn: '18:05', checkOut: '02:10', present: true, hours: 8.1 });

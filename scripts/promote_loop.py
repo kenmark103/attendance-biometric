@@ -21,6 +21,7 @@ Env:
 """
 
 import os
+import logging
 import signal
 import sys
 import time
@@ -33,6 +34,12 @@ from sqlalchemy import create_engine, text
 from app.ingestion.config import _normalize_db_url
 from app.ingestion.scope import import_scope
 
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("promoter")
+
 SQL_PATH = os.environ.get(
     "PROMOTE_SQL_PATH", "/scripts/promote_cosec_to_attendance.sql"
 )
@@ -41,7 +48,7 @@ INTERVAL = int(os.environ.get("PROMOTE_INTERVAL_SECONDS", "300"))
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 if not DATABASE_URL:
-    print("DATABASE_URL is required", file=sys.stderr)
+    log.error("DATABASE_URL is required")
     sys.exit(2)
 
 engine = create_engine(_normalize_db_url(DATABASE_URL), pool_pre_ping=True)
@@ -72,13 +79,13 @@ def scoped_count() -> int:
 
 def promote_once() -> None:
     if scoped_count() == 0:
-        print("SCOPE WIPED (0 in_scope users) — re-applying roster before promoting", flush=True)
+        log.warning("scope wiped (0 in_scope users); re-applying roster before promoting")
         try:
             import_scope(engine, CSV_PATH, True)
         except SystemExit as exc:
-            print(f"scope restore refused (exit {exc.code}); promoting anyway", flush=True)
+            log.warning("scope restore refused (exit %s); promoting anyway", exc.code)
         except OSError as exc:
-            print(f"scope CSV unreadable ({exc}); promoting anyway", flush=True)
+            log.warning("scope CSV unreadable (%s); promoting anyway", exc)
     with open(SQL_PATH, encoding="utf-8") as f:
         promote_sql = f.read()
     conn = psycopg2.connect(DATABASE_URL)
@@ -87,7 +94,7 @@ def promote_once() -> None:
         cur = conn.cursor()
         cur.execute(promote_sql)  # DO block RAISEs NOTICE with the affected count
         for notice in list(conn.notices):
-            print(notice.strip(), flush=True)
+            log.info(notice.strip())
         del conn.notices[:]
         cur.close()
     finally:
@@ -99,18 +106,13 @@ while not _stop:
     try:
         promote_once()
         failures = 0
-        print(f"promote ok; next run in {INTERVAL}s", flush=True)
+        log.info("promote ok; next run in %ss", INTERVAL)
     except Exception as exc:  # keep looping; a bad cycle must not kill the service
         failures += 1
-        print(
-            f"promote failed ({failures} consecutive): "
-            f"{type(exc).__name__}: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
+        log.exception("promote failed (%s consecutive): %s", failures, exc)
     for _ in range(INTERVAL):
         if _stop:
             break
         time.sleep(1)
 
-print("promoter stopping")
+log.info("promoter stopping")
