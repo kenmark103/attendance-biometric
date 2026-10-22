@@ -3,7 +3,7 @@ import React, { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { colors } from '../theme.js';
 import { isWeekendISO, shortDateISO, leaveQuality } from '../metrics.js';
-import { monthLabel } from '../filters.js';
+import { monthLabel, halfOfDate } from '../filters.js';
 
 function nairobi(s) {
   if (!s) return '—';
@@ -86,7 +86,7 @@ export default function DataHealth({ scope }) {
                 }}
                 onClick={() => {
                   const m = d.date.slice(0, 7);
-                  update({ month: m, range: Number(d.date.slice(8, 10)) <= 15 ? 'h1' : 'h2', day: d.date }, { path: '/' });
+                  update({ month: m, range: halfOfDate(d.date), day: d.date }, { path: '/' });
                 }}>
                 {shortDateISO(d.date)} · {d.count}
               </div>

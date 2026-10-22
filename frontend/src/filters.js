@@ -50,8 +50,8 @@ export function rangeDates(month, range) {
 export function defaultFilters(months, today) {
   const cur = currentMonthKey(today);
   const month = months.includes(cur) ? cur : months[months.length - 1] || '';
-  const range = month === cur ? halfOfDate(today) : 'whole';
-  return { month, range, day: '', shift: 'all', teams: null, nopunch: false };
+  // The dashboard opens on the whole month; H1/H2 are opt-in via the filter bar.
+  return { month, range: 'whole', day: '', shift: 'all', teams: null, nopunch: false };
 }
 
 // slug <-> team-name maps built from the data.
@@ -68,7 +68,7 @@ export function parseFilters(search, months, slugToName, today) {
   if (!months.includes(month)) month = dflt.month;
   let range = (p.get('range') || '').toLowerCase();
   if (!RANGES.includes(range)) {
-    range = month === currentMonthKey(today) ? halfOfDate(today) : 'whole';
+    range = 'whole';
   }
   let day = p.get('day') || '';
   if (day && !rangeDates(month, range).includes(day)) day = '';
@@ -98,11 +98,9 @@ export function parseFilters(search, months, slugToName, today) {
 // Serialize back; defaults are omitted so URLs stay short and shareable.
 export function serializeFilters(f, months, today) {
   const dflt = defaultFilters(months, today);
-  const curIsMonth = f.month === currentMonthKey(today);
-  const dfltRange = curIsMonth ? halfOfDate(today) : 'whole';
   const p = new URLSearchParams();
   if (f.month && f.month !== dflt.month) p.set('month', f.month);
-  if (f.range !== (f.month === dflt.month ? dflt.range : dfltRange)) p.set('range', f.range);
+  if (f.range && f.range !== 'whole') p.set('range', f.range);
   if (f.day) p.set('day', f.day);
   if (f.shift && f.shift !== 'all') p.set('shift', f.shift);
   if (f.teams) p.set('teams', f.teams.join(','));

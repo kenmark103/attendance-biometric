@@ -78,7 +78,7 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
     for (const k of ['month', 'range', 'day', 'shift', 'teams', 'nopunch']) base.delete(k);
     // month change resets range/day unless explicitly given
     if (patch.month !== undefined && patch.month !== filters.month && patch.range === undefined && !opts.reset) {
-      next.range = next.month === today.slice(0, 7) ? rangeDefaultForMonth(next.month, today) : 'whole';
+      next.range = 'whole';
       next.day = '';
     }
     const shared = serializeFilters(next, months, today, dflt);
@@ -228,10 +228,4 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
       </div>
     </div>
   );
-}
-
-function rangeDefaultForMonth(month, today) {
-  return month === today.slice(0, 7)
-    ? (Number(today.slice(8, 10)) <= 15 ? 'h1' : 'h2')
-    : 'whole';
 }
