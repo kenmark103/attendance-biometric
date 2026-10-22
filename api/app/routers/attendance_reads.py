@@ -147,7 +147,7 @@ def stats_coverage(user=Depends(viewer), conn=Depends(get_db)):
     """Sync-verification aggregate: proves what actually landed in the DB.
 
     Returns total attendance rows, date range, per-date counts, per-month
-    counts, employee/team counts, leave + holiday + wfh totals, and the
+    counts, employee/team counts, leave + holiday totals, and the
     latest sync_log entries — everything the Sync-check tab needs to
     compare DB state against the source file, in one request.
     """
@@ -173,8 +173,6 @@ def stats_coverage(user=Depends(viewer), conn=Depends(get_db)):
     n_leave = cur.fetchone()["n"]
     cur.execute("SELECT COUNT(*) AS n FROM holidays")
     n_holidays = cur.fetchone()["n"]
-    cur.execute("SELECT COUNT(*) AS n FROM wfh_approvals")
-    n_wfh = cur.fetchone()["n"]
     cur.execute(
         "SELECT to_char(date, 'YYYY-MM') AS month FROM leave_records "
         "GROUP BY 1 HAVING COUNT(*) > 0 ORDER BY 1"
@@ -216,7 +214,6 @@ def stats_coverage(user=Depends(viewer), conn=Depends(get_db)):
         "trust_zoho_presence": settings.TRUST_ZOHO_PRESENCE,
         "sync_state": sync_state,
         "holidays": n_holidays,
-        "wfh_rows": n_wfh,
         "sync_log": [
             {
                 "id": r["id"],

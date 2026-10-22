@@ -3,7 +3,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { colors } from './theme.js';
-import { DashboardHeader, DashboardNav } from './components/DashboardChrome.jsx';
+import { DashboardNav } from './components/DashboardChrome.jsx';
 import FilterBar from './components/FilterBar.jsx';
 import Overview from './views/Overview.jsx';
 import Teams, { TeamDetail } from './views/Teams.jsx';
@@ -59,7 +59,7 @@ export function scopeCaptionLine(caption, extra) {
   );
 }
 
-export default function Dashboard({ records, calMeta, calendarOk, coverage, roster, user, onLogout, onSyncNow, syncing, syncMsg }) {
+export default function Dashboard({ records, calMeta, calendarOk, coverage, roster, user, onSyncNow, syncing, syncMsg }) {
   const today = useMemo(() => todayNairobi(), []);
   const navigate = useNavigate();
   const location = useLocation();
@@ -178,7 +178,7 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
   }), [dates, rows]);
 
   const activeTab = '/' + (location.pathname.split('/')[1] || '');
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'Admin';
   const visibleTabs = TABS.filter(([path]) => path !== '/leave' || isAdmin);
 
   const scope = {
@@ -191,10 +191,10 @@ export default function Dashboard({ records, calMeta, calendarOk, coverage, rost
     <div style={{
       background: colors.paper, color: colors.ink, minHeight: '100vh',
       fontFamily: "'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif",
-      padding: '0 28px 48px', boxSizing: 'border-box',
+      padding: '0 0 48px', boxSizing: 'border-box',
     }}>
-      <div style={{ maxWidth: 1280, margin: '0 auto' }}>
-        <DashboardHeader user={user} onLogout={onLogout} />
+      <div className="app-page-container">
+        <h1 className="dashboard-page-title">Attendance Dashboard</h1>
 
         {leaveActive && calendarOk === false && (
           <div style={{

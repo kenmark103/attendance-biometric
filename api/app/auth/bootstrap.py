@@ -19,7 +19,7 @@ def ensure_bootstrap_admin() -> str | None:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id FROM users WHERE role = 'admin' AND auth_provider = 'local'"
+            "SELECT id FROM users WHERE role = 'Admin' AND auth_provider = 'local'"
             " AND is_active = TRUE LIMIT 1",
         )
         if cur.fetchone():
@@ -28,7 +28,7 @@ def ensure_bootstrap_admin() -> str | None:
         cur.execute(
             "INSERT INTO users (email, display_name, role, auth_provider,"
             " password_hash, must_change_password)"
-            " VALUES (%s, 'Bootstrap admin', 'admin', 'local', %s, FALSE)"
+            " VALUES (%s, 'Bootstrap admin', 'Admin', 'local', %s, FALSE)"
             " ON CONFLICT (email) DO NOTHING",
             (email, hash_password(password)),
         )

@@ -471,7 +471,7 @@ def get_calendar(
     in LEAVE_TYPE_DETAIL_ROLES see the mapped label, everyone else sees
     'On leave' (null when the day is not leave).
     """
-    privileged = user.get("role") in settings.LEAVE_TYPE_DETAIL_ROLES
+    privileged = (user.get("role") or "").lower() in settings.LEAVE_TYPE_DETAIL_ROLES
     priority = [s for s in settings.LEAVE_SOURCE_PRIORITY if s in ("api", "xls")]
     for s in ("api", "xls"):
         if s not in priority:

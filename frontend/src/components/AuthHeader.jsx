@@ -23,9 +23,12 @@ export default function AuthHeader({ user: propUser, onLogout }) {
           <span style={{ marginLeft: 6, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 }}>{u.email}</span>
           <span style={{ marginLeft: 6, fontSize: 11, background: colors.slate, color: '#fff', borderRadius: 3, padding: '1px 5px' }}>{u.role}</span>
         </span>
-        {u.role === 'admin' && (
+        {u.role === 'Admin' && <>
           <Link to="/users" style={{ fontSize: 13, color: colors.slate }}>Users</Link>
-        )}
+          <Link to="/wfh" style={{ fontSize: 13, color: colors.slate }}>Work from home</Link>
+          <Link to="/audit-log" style={{ fontSize: 13, color: colors.slate }}>Audit log</Link>
+          <Link to="/auth-events" style={{ fontSize: 13, color: colors.slate }}>Auth events</Link>
+        </>}
         <Link to="/" style={{ fontSize: 13, color: colors.slate }}>Dashboard</Link>
         <button onClick={signOut} style={{ fontFamily: 'inherit', fontSize: 13, padding: '6px 12px', border: `1px solid ${colors.line}`, background: colors.panel, borderRadius: 4, cursor: 'pointer' }}>Sign out</button>
       </div>

@@ -103,6 +103,7 @@ def _coverage_restore(keep):
 
 def _mkuser(email, role="admin", password="0123456789abcdef"):
     from app.auth.security import hash_password
+    role = {"admin": "Admin", "viewer": "Viewer"}.get(role, role)
     conn = get_conn()
     try:
         cur = conn.cursor()

@@ -61,10 +61,10 @@ export default function FilterBar({ filters, months, teams, teamHeadcounts, mont
 
   return (
     <div style={{
-      position: 'sticky', top: 0, zIndex: 50, background: colors.paper,
+      position: 'sticky', top: 'var(--header-h)', zIndex: 40, background: colors.paper,
       borderBottom: `1px solid ${colors.line}`, padding: '8px 0', marginBottom: 16,
     }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 1280 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <select aria-label="Month" value={filters.month} onChange={(e) => onChange({ month: e.target.value, range: undefined, day: '' })} style={sel}>
           {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
         </select>

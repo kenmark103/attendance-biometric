@@ -27,6 +27,7 @@ STATUS_ON_LEAVE = "on_leave"
 STATUS_ABSENT = "absent"
 STATUS_UNVERIFIED = "unverified"
 STATUS_PENDING = "pending"
+STATUS_WFH_EXEMPT = "wfh_exempt"
 
 COUNTED_STATUSES = {
     STATUS_PRESENT, STATUS_ON_LEAVE, STATUS_ABSENT, STATUS_UNVERIFIED,
@@ -111,7 +112,8 @@ def build_metrics(*, employees: list[dict], records: dict, calendar: dict,
                   start: date, end: date, today: date,
                   team_filter: set | None = None,
                   shift_filter: str | None = None,
-                  exclude_never_punched: bool = False) -> dict:
+                  exclude_never_punched: bool = False,
+                  wfh_exemptions: dict[date, set[str]] | None = None) -> dict:
     """Compute summary + daily series + team rows + per-employee detail.
 
     employees : [{id, name, team, shift}]
@@ -136,6 +138,7 @@ def build_metrics(*, employees: list[dict], records: dict, calendar: dict,
     holidays = holidays or set()
 
     emp_out = []
+    wfh_exemptions = wfh_exemptions or {}
     for e in roster:
         eid = e["id"]
         counters = {
@@ -154,17 +157,18 @@ def build_metrics(*, employees: list[dict], records: dict, calendar: dict,
                 or ((eid, d) in leave_dates)
             )
             no_data = d not in org_punch_dates
+            exempt = eid in wfh_exemptions.get(d, set())
             result = classify(
                 d=d, rec=rec, on_leave=on_leave,
                 holiday=d in holidays, no_data=no_data,
                 coverage_through=coverage_through, today=today)
-            status = result["status"]
+            status = STATUS_WFH_EXEMPT if exempt else result["status"]
             flags = result["flags"]
             counted = status in COUNTED_STATUSES and d < today
 
             if has_punch(rec) and not is_weekend(d) and d not in holidays:
                 ever_punched = ever_punched or d <= today
-            if counted:
+            if counted and not exempt:
                 counters["expected"] += 1
                 counters[status] += 1
             if status == STATUS_PRESENT and d <= today:
@@ -207,6 +211,8 @@ def build_metrics(*, employees: list[dict], records: dict, calendar: dict,
                 "leave_fraction": float((cal or {}).get("fraction") or 1),
                 "zoho_presence": (cal or {}).get("zoho_presence"),
                 "source": (rec or {}).get("source"),
+                "wfh_exempt": exempt,
+                "wfh_exempt_present": bool(exempt and has_punch(rec)),
             })
         expected = counters["expected"]
         present = counters["present"]
@@ -233,6 +239,8 @@ def build_metrics(*, employees: list[dict], records: dict, calendar: dict,
             "late": int(counters["late"]),
             "early": int(counters["early"]),
             "biometric_days": counters["biometric"],
+            "wfh_exempt": sum(1 for day in days if day["wfh_exempt"]),
+            "wfh_exempt_present": sum(1 for day in days if day["wfh_exempt_present"]),
             "days": days,
         })
 
@@ -254,6 +262,8 @@ def build_metrics(*, employees: list[dict], records: dict, calendar: dict,
                      and dd["date"] < today.isoformat()
                      and dd["check_in"] and dd["check_out"])
     biometric_days = sum(e["biometric_days"] for e in emp_out)
+    wfh_exempt_days = sum(e["wfh_exempt"] for e in emp_out)
+    wfh_exempt_present_days = sum(e["wfh_exempt_present"] for e in emp_out)
 
     working_dates = [d for d in dates
                      if not is_weekend(d) and d not in holidays and d <= today]
@@ -282,6 +292,8 @@ def build_metrics(*, employees: list[dict], records: dict, calendar: dict,
         "no_punch_in_period": no_punch_in_period,
         "avg_hours": round(hours_sum / hours_days, 1) if hours_days else None,
         "biometric_days": biometric_days,
+        "wfh_exempt": wfh_exempt_days,
+        "wfh_exempt_present": wfh_exempt_present_days,
     }
 
     daily = []
@@ -305,6 +317,8 @@ def build_metrics(*, employees: list[dict], records: dict, calendar: dict,
             "attendance_rate": _rate(counts[STATUS_PRESENT], expected, on_leave),
             "state": _day_state(d, in_period_data=(d in org_punch_dates),
                                 coverage_through=coverage_through, today=today),
+            "wfh_exempt": sum(1 for e in emp_out if e["days"][dates.index(d)]["wfh_exempt"]),
+            "wfh_exempt_present": sum(1 for e in emp_out if e["days"][dates.index(d)]["wfh_exempt_present"]),
         })
 
     teams = []
@@ -349,6 +363,8 @@ def build_metrics(*, employees: list[dict], records: dict, calendar: dict,
             "missing_checkouts": sum(e["missing"] for e in members),
             "no_punch_in_period": sum(1 for e in members if e["never_punched"]),
             "small": len(members) < 5,
+            "wfh_exempt": sum(e["wfh_exempt"] for e in members),
+            "wfh_exempt_present": sum(e["wfh_exempt_present"] for e in members),
             "daily": t_daily,
         })
 

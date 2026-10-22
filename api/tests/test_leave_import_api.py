@@ -78,6 +78,7 @@ def _clean():
 
 def _mkuser(email, role="admin", password="0123456789abcdef"):
     from app.auth.security import hash_password
+    role = {"admin": "Admin", "viewer": "Viewer"}.get(role, role)
     conn = _db()
     try:
         cur = conn.cursor()

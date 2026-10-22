@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.auth.admin import router as admin_router
@@ -59,8 +60,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Attendance System API", lifespan=lifespan)
-# Same-origin by design (browser reaches the API through the nginx /api
-# prefix): no CORS middleware, no cross-site cookies.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.CORS_ALLOWED_ORIGINS),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+)
 
 app.include_router(local_router)
 app.include_router(microsoft_router)

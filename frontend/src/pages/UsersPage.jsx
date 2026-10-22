@@ -9,7 +9,7 @@ const btn = { fontFamily: 'inherit', fontSize: 12, padding: '6px 10px', border: 
 export default function UsersPage() {
   const [users, setUsers] = useState(null);
   const [error, setError] = useState(null);
-  const [form, setForm] = useState({ email: '', display_name: '', role: 'viewer', auth_provider: 'local' });
+  const [form, setForm] = useState({ email: '', display_name: '', role: 'Viewer' });
   const [tempPw, setTempPw] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -31,7 +31,7 @@ export default function UsersPage() {
     try {
       const created = await createUser(form);
       if (created.temporary_password) setTempPw({ email: created.email, pw: created.temporary_password });
-      setForm({ email: '', display_name: '', role: 'viewer', auth_provider: 'local' });
+      setForm({ email: '', display_name: '', role: 'Viewer' });
       await load();
     } catch (err) {
       setError(String(err.message || err));
@@ -41,7 +41,7 @@ export default function UsersPage() {
   }
 
   async function toggleRole(u) {
-    const order = ['viewer', 'manager', 'admin'];
+    const order = ['Viewer', 'Admin'];
     const next = order[(order.indexOf(u.role) + 1) % order.length];
     try {
       await patchUser(u.id, { role: next });
@@ -61,7 +61,7 @@ export default function UsersPage() {
   }
 
   async function resetPw(u) {
-    if (u.provider !== 'local') return;
+    if (u.auth_provider !== 'local') return;
     try {
       const r = await resetUserPassword(u.id);
       setTempPw({ email: u.email, pw: r.temporary_password });
@@ -74,8 +74,8 @@ export default function UsersPage() {
   if (!users) return <div style={{ padding: 40, color: colors.muted, fontFamily: 'sans-serif' }}>Loading users…</div>;
 
   return (
-    <div style={{ maxWidth: 1120, margin: '0 auto', padding: '24px 28px', fontFamily: "'IBM Plex Sans', sans-serif" }}>
-      <h2 style={{ color: colors.slate, margin: '0 0 4px' }}>Users</h2>
+    <div className="app-page-container" style={{ paddingTop: 24, paddingBottom: 28, fontFamily: "'IBM Plex Sans', sans-serif" }}>
+      <h1 style={{ color: colors.slate, margin: '0 0 4px', fontSize: 26 }}>Users</h1>
       <p style={{ fontSize: 13, color: colors.muted, margin: '0 0 20px' }}>
         System logins — distinct from employees (attendance subjects). Entra roles are overwritten on next SSO login when Entra supplies a role.
       </p>
@@ -100,16 +100,8 @@ export default function UsersPage() {
         <label style={{ fontSize: 12, color: colors.muted }}>Role
           <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}
             style={{ display: 'block', padding: '8px 10px', fontSize: 13, border: `1px solid ${colors.line}`, borderRadius: 4, fontFamily: 'inherit' }}>
-            <option value="viewer">viewer</option>
-            <option value="manager">manager</option>
-            <option value="admin">admin</option>
-          </select>
-        </label>
-        <label style={{ fontSize: 12, color: colors.muted }}>Provider
-          <select value={form.auth_provider} onChange={(e) => setForm({ ...form, auth_provider: e.target.value })}
-            style={{ display: 'block', padding: '8px 10px', fontSize: 13, border: `1px solid ${colors.line}`, borderRadius: 4, fontFamily: 'inherit' }}>
-            <option value="local">local (email + password)</option>
-            <option value="entra">entra (SSO, binds on first login)</option>
+            <option value="Viewer">Viewer</option>
+            <option value="Admin">Admin</option>
           </select>
         </label>
         <button type="submit" disabled={busy} style={{ ...btn, padding: '9px 16px', background: colors.slate, color: '#fff', border: `1px solid ${colors.slate}`, fontWeight: 600 }}>
@@ -117,7 +109,7 @@ export default function UsersPage() {
         </button>
       </form>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', background: colors.panel }}>
+      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', background: colors.panel }}>
         <thead>
           <tr><th style={th}>Email</th><th style={th}>Name</th><th style={th}>Role</th><th style={th}>Provider</th><th style={th}>Active</th><th style={th}>Actions</th></tr>
         </thead>
@@ -127,13 +119,13 @@ export default function UsersPage() {
               <td style={td}>{u.email}</td>
               <td style={td}>{u.display_name || '—'}</td>
               <td style={td}><button onClick={() => toggleRole(u)} style={btn} title="Click to cycle role">{u.role} ↻</button></td>
-              <td style={td}>{u.provider}{u.must_change_password && u.provider === 'local' ? ' (must change pw)' : ''}</td>
+              <td style={td}>{u.auth_provider}{u.must_change_password && u.auth_provider === 'local' ? ' (must change pw)' : ''}</td>
               <td style={td}><button onClick={() => toggleActive(u)} style={btn}>{u.is_active ? 'yes' : 'no'} ↻</button></td>
-              <td style={td}>{u.provider === 'local' && <button onClick={() => resetPw(u)} style={btn}>Reset password</button>}</td>
+              <td style={td}>{u.auth_provider === 'local' && <button onClick={() => resetPw(u)} style={btn}>Reset password</button>}</td>
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   );
 }

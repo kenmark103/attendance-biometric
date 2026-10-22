@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app.core import settings
 from app.core.db import get_db
-from app.core.deps import manager, viewer
+from app.core.deps import viewer
 from app.metrics import service
 from app.metrics.core import (
     COUNTED_STATUSES,
@@ -42,9 +42,13 @@ def dashboard_metrics(
     if (date_to - date_from).days > 400:
         raise HTTPException(status_code=422, detail="range too wide (max 400 days)")
 
-    privileged = user.get("role") in settings.LEAVE_TYPE_DETAIL_ROLES
+    privileged = (user.get("role") or "").lower() in settings.LEAVE_TYPE_DETAIL_ROLES
     team_filter = service.resolve_team_filter(conn, _split(teams))
     data = service.load_all(conn, date_from, date_to, privileged=privileged)
+    wfh_exemptions = {}
+    if settings.WFH_EXCLUSION_ENABLED:
+        from app.wfh.resolver import exempt_set
+        wfh_exemptions = exempt_set(conn, date_from, date_to)
     today = service.today_local()
     shift_filter = shift.strip().lower() if shift and shift.strip() else None
 
@@ -61,6 +65,7 @@ def dashboard_metrics(
         team_filter=team_filter,
         shift_filter=shift_filter,
         exclude_never_punched=exclude_never_punched,
+        wfh_exemptions=wfh_exemptions,
     )
     result["range"] = {"date_from": date_from.isoformat(),
                        "date_to": date_to.isoformat()}
@@ -76,7 +81,7 @@ def get_roster(
     employee_id: str | None = Query(None),
     status: str | None = Query(None),
     format: str = Query("json"),
-    user=Depends(manager),
+    user=Depends(viewer),
     conn=Depends(get_db),
 ):
     """One row per employee for a single date, with first-last punch
@@ -94,7 +99,7 @@ def get_roster(
     else:
         statuses = None
 
-    privileged = user.get("role") in settings.LEAVE_TYPE_DETAIL_ROLES
+    privileged = (user.get("role") or "").lower() in settings.LEAVE_TYPE_DETAIL_ROLES
     day = date_
     team_filter = service.resolve_team_filter(conn, _split(teams))
     data = service.load_all(conn, day, day, privileged=privileged)

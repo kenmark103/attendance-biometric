@@ -63,7 +63,6 @@ export const fetchAttendance = (params) => getJSON('/attendance', params);
 export const fetchLeave = (params) => getJSON('/leave', params);
 export const fetchCalendar = (params) => getJSON('/leave/calendar', params);
 export const fetchHolidays = (params) => getJSON('/holidays', params);
-export const fetchWfh = (params) => getJSON('/wfh', params);
 export const fetchEmployees = () => getJSON('/employees');
 export const fetchCoverage = () => getJSON('/stats/coverage');
 // Backend is the single source of truth for statuses and rates (spec §2).
@@ -79,8 +78,6 @@ export async function downloadRosterCsv(params) {
   return r.text();
 }
 export const fetchSyncLog = (limit = 50) => getJSON('/sync-log', { limit });
-export const createWfh = (payload) => postJSON('/wfh', payload);
-export const deleteWfh = (id) => delJSON(`/wfh/${id}`);
 export const syncNow = () => postJSON('/ingestion/sync-now', {});
 
 // --- leave ingestion (admin) ---
@@ -116,11 +113,18 @@ export async function downloadLeaveSample() {
 // --- auth / admin ---
 export const changePassword = (current_password, new_password) =>
   postJSON('/auth/change-password', { current_password, new_password });
-export const fetchUsers = () => getJSON('/users');
-export const createUser = (payload) => postJSON('/users', payload);
-export const patchUser = (id, payload) => patchJSON(`/users/${id}`, payload);
-export const resetUserPassword = (id) => postJSON(`/users/${id}/reset-password`, {});
-export const fetchAuthEvents = (limit = 100) => getJSON('/auth/events', { limit });
+export const fetchUsers = () => getJSON('/admin/users');
+export const createUser = (payload) => postJSON('/admin/users', payload);
+export const patchUser = (id, payload) => patchJSON(`/admin/users/${id}`, payload);
+export const resetUserPassword = (id) => postJSON(`/admin/users/${id}/reset-password`, {});
+export const fetchAuthEvents = (limit = 100) => getJSON('/admin/auth-events', { limit });
+export const fetchAuditLog = (params) => getJSON('/admin/audit-log', params);
+export const fetchWfhPolicies = (params) => getJSON('/admin/wfh/policies', params);
+export const createWfhPolicy = (payload) => postJSON('/admin/wfh/policies', payload);
+export const approveWfhPolicy = (id) => postJSON(`/admin/wfh/policies/${id}/approve`, {});
+export const revokeWfhPolicy = (id) => postJSON(`/admin/wfh/policies/${id}/revoke`, {});
+export const fetchWfhRecalls = () => getJSON('/admin/wfh/recalls');
+export const createWfhRecall = (payload) => postJSON('/admin/wfh/recalls', payload);
 
 function toDateStr(d) {
   return d ? String(d).slice(0, 10) : d;
@@ -173,11 +177,10 @@ export async function fetchAllCalendar(params = {}) {
 
 export async function fetchDayRecords({ date_from, date_to, team_id } = {}) {
   let calendar = null; // null = failed (old DBs may lack the tables); [] = none
-  const [attendance, leave, holidays, wfh] = await Promise.all([
+  const [attendance, leave, holidays] = await Promise.all([
     fetchAllPaged(fetchAttendance, { date_from, date_to, team_id }),
     fetchAllPaged(fetchLeave, { date_from, date_to }),
     fetchHolidays({ date_from, date_to }),
-    fetchAllPaged(fetchWfh, { date_from, date_to }).catch(() => []),
   ]);
   try {
     calendar = await fetchAllCalendar({ date_from, date_to });
@@ -186,7 +189,6 @@ export async function fetchDayRecords({ date_from, date_to, team_id } = {}) {
   }
 
   const holidayByDate = new Map(holidays.map((h) => [toDateStr(h.date), h.name]));
-  const wfhByKey = new Set(wfh.map((w) => `${w.employee_id}|${toDateStr(w.date)}`));
 
   const leavesByKey = new Map(); // "employeeId|date" -> [{type, status}]
   for (const l of leave) {
@@ -215,7 +217,6 @@ export async function fetchDayRecords({ date_from, date_to, team_id } = {}) {
     const holidayName = holidayByDate.get(date) || null;
     const cal = calByKey.get(key);
 
-    const isWfh = wfhByKey.has(key);
     const punches = (a.check_in ? 1 : 0) + (a.check_out ? 1 : 0);
     // Carry-forward (spec §9): past an employee's last calendar row, a
     // trailing `not_employed` persists; anything else means no leave data
@@ -234,9 +235,8 @@ export async function fetchDayRecords({ date_from, date_to, team_id } = {}) {
       overtime: Number(a.overtime_hours ?? 0),
       late: !!a.late_in,
       early: !!a.early_out,
-      present: !!a.present || isWfh,
-      wfh: isWfh,
-      source: isWfh ? 'wfh' : (a.source || 'migrated'),
+      present: !!a.present,
+      source: a.source || 'migrated',
       assignedShift: a.assigned_shift || null,
       matchedShift: a.matched_shift || null,
       shiftAnomaly: !!a.shift_anomaly,
